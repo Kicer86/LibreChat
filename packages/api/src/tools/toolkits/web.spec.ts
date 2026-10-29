@@ -21,13 +21,13 @@ describe('web search context', () => {
     expect(context).toContain('current, real-time, or otherwise beyond your own knowledge');
   });
 
-  it('builds dynamic context from the supplied conversation anchor', () => {
+  it('keeps dynamic context stable within a UTC day and advances on the next day', () => {
     const context = buildWebSearchDynamicContext('2024-01-02T03:04:05.000Z');
-    const secondContext = buildWebSearchDynamicContext('2024-01-02T03:04:05.000Z');
+    const sameDayContext = buildWebSearchDynamicContext('2024-01-02T23:59:59.999Z');
+    const nextDayContext = buildWebSearchDynamicContext('2024-01-03T00:00:00.000Z');
 
-    expect(context).toBe(
-      '# `web_search` Runtime Context\nConversation Date & Time: 2024-01-02T03:04:05.000Z',
-    );
-    expect(secondContext).toBe(context);
+    expect(context).toBe('# `web_search` Runtime Context\nCurrent Date: 2024-01-02');
+    expect(sameDayContext).toBe(context);
+    expect(nextDayContext).toBe('# `web_search` Runtime Context\nCurrent Date: 2024-01-03');
   });
 });
