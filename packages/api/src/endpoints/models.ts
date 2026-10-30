@@ -251,7 +251,7 @@ export async function fetchModels({
       headers: {
         ...resolvedHeaders,
       },
-      timeout: 5000,
+      timeout: 30_000,
     };
 
     if (name === EModelEndpoint.anthropic) {

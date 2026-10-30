@@ -715,7 +715,10 @@ describe('fetchModels with Ollama specific logic', () => {
     });
 
     expect(models).toEqual(['model-1', 'model-2']);
-    expect(mockedAxios.get).toHaveBeenCalledWith('https://api.test.com/models', expect.any(Object));
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      'https://api.test.com/models',
+      expect.objectContaining({ timeout: 30_000 }),
+    );
   });
 
   it('writes Ollama models to cache with TTL', async () => {
