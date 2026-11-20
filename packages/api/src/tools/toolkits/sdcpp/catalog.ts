@@ -26,6 +26,25 @@ export interface SdcppModel {
   cfgScale?: number;
   sampler?: string;
   scheduler?: string;
+  /** Video models only: the clip length and frame rate the recipe renders by default. */
+  frames?: number;
+  fps?: number;
+  /** Video models only: which frame counts the model can render, and its fixed frame rate. */
+  frameRule?: SdcppFrameRule;
+}
+
+/**
+ * The frame counts a video model renders: `offset + step·n` frames (LTX takes 8n+1, Wan 4n+1),
+ * at least `min` and at most `max`. sd-server rounds another count to the rule (`rounding`).
+ * Some models play at one frame rate only (`fixedFps`).
+ */
+export interface SdcppFrameRule {
+  offset: number;
+  step: number;
+  rounding: 'floor' | 'ceil';
+  min: number;
+  max?: number;
+  fixedFps?: number;
 }
 
 export interface SdcppCatalog {
@@ -70,11 +89,37 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 const positiveInteger = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 
+const wholeNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+
 const finiteNumber = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 
 const nonEmptyString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+
+/** Any frame count, from one frame up, for a video recipe that states no constraints. */
+const ANY_FRAME_COUNT: SdcppFrameRule = { offset: 0, step: 1, rounding: 'floor', min: 1 };
+
+/** A recipe's `video_constraints`; a malformed one is treated as stating none. */
+function parseFrameRule(constraints: unknown): SdcppFrameRule {
+  if (!isPlainObject(constraints)) {
+    return ANY_FRAME_COUNT;
+  }
+  const offset = wholeNumber(constraints.frame_offset) ?? 0;
+  const step = positiveInteger(constraints.frame_step) ?? 1;
+  const min = positiveInteger(constraints.min_frames) ?? 1;
+  const max = positiveInteger(constraints.max_frames);
+  const fixedFps = positiveInteger(constraints.fixed_fps);
+  return {
+    offset,
+    step,
+    rounding: constraints.frame_rounding === 'ceil' ? 'ceil' : 'floor',
+    min,
+    ...(max != null && max >= min && { max }),
+    ...(fixedFps && { fixedFps }),
+  };
+}
 
 function parseRecipe(recipe: unknown): SdcppModel | undefined {
   if (!isPlainObject(recipe) || !isPlainObject(recipe.models)) {
@@ -93,6 +138,8 @@ function parseRecipe(recipe: unknown): SdcppModel | undefined {
   const cfgScale = finiteNumber(defaults.cfg_scale);
   const sampler = nonEmptyString(defaults.sampling_method);
   const scheduler = nonEmptyString(defaults.scheduler);
+  const frames = positiveInteger(defaults.video_frames);
+  const fps = positiveInteger(defaults.fps);
   return {
     id,
     name: nonEmptyString(recipe.name) ?? id,
@@ -106,6 +153,11 @@ function parseRecipe(recipe: unknown): SdcppModel | undefined {
     ...(cfgScale != null && { cfgScale }),
     ...(sampler && { sampler }),
     ...(scheduler && { scheduler }),
+    ...(mode === 'video' && {
+      ...(frames && { frames }),
+      ...(fps && { fps }),
+      frameRule: parseFrameRule(recipe.video_constraints),
+    }),
   };
 }
 

@@ -43,9 +43,28 @@ const recipesResponse = {
       source: 'user',
       models: { diffusion_model: 'diffusion_models/ltx-2.5-22b-distilled-Q4_K_M.gguf' },
       size_multiple: 32,
-      video_constraints: { frame_offset: 1, frame_step: 8, min_frames: 1 },
-      defaults: { width: 768, height: 512, video_frames: 121, fps: 24 },
+      video_constraints: {
+        frame_offset: 1,
+        frame_rounding: 'floor',
+        frame_step: 8,
+        min_frames: 1,
+      },
+      defaults: { width: 768, height: 512, video_frames: 121, fps: 24, steps: 8 },
       effective_features: { img2img: false, init_image: true, end_image: true },
+    },
+    {
+      id: 'hyperflow',
+      models: { diffusion_model: 'diffusion_models/hyperflow.gguf' },
+      size_multiple: 32,
+      video_constraints: {
+        fixed_fps: 24,
+        frame_offset: 5,
+        frame_rounding: 'ceil',
+        frame_step: 17,
+        max_frames: 260,
+        min_frames: 5,
+      },
+      defaults: { width: 1344, height: 768, video_frames: 124, fps: 24 },
     },
     {
       id: 'local-wan22-t2v-q4',
@@ -92,6 +111,22 @@ describe('parseSdcppRecipes', () => {
         sizeMultiple: 32,
         width: 768,
         height: 512,
+        steps: 8,
+        frames: 121,
+        fps: 24,
+        frameRule: { offset: 1, step: 8, rounding: 'floor', min: 1 },
+      },
+      {
+        id: 'hyperflow',
+        name: 'hyperflow',
+        mode: 'video',
+        acceptsImage: false,
+        sizeMultiple: 32,
+        width: 1344,
+        height: 768,
+        frames: 124,
+        fps: 24,
+        frameRule: { offset: 5, step: 17, rounding: 'ceil', min: 5, max: 260, fixedFps: 24 },
       },
       {
         id: 'local-wan22-t2v-q4',
@@ -101,6 +136,8 @@ describe('parseSdcppRecipes', () => {
         sizeMultiple: 64,
         width: 832,
         height: 480,
+        frames: 33,
+        frameRule: { offset: 0, step: 1, rounding: 'floor', min: 1 },
       },
     ]);
   });
@@ -166,6 +203,7 @@ describe('getSdcppCatalog', () => {
     expect(catalog?.models.map((model) => model.id)).toEqual([
       'local-qwen-image-21-q8',
       'local-ltx25-distilled-q4',
+      'hyperflow',
       'local-wan22-t2v-q4',
     ]);
     expect(probe).toHaveBeenCalledWith(`${url}/sdcpp/v1/recipes`);
