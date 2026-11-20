@@ -663,6 +663,7 @@ export async function generateStableDiffusionImage(
     lock: context.lock ?? processLock,
     url: context.url,
     waitMs: getOutboundTimeoutMs(appConfig, budgetKey),
+    signal: context.signal,
   };
   /** A server not identified yet gets the WebUI request prepared for it, already within the limits. */
   const unlistedPayload = (signal: AbortSignal) =>

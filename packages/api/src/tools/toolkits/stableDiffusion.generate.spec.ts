@@ -707,6 +707,27 @@ describe('generateStableDiffusionImage', () => {
     ).resolves.toEqual({ error: STABLE_DIFFUSION_MODEL_UNSUPPORTED });
   });
 
+  it('stops waiting for a busy server when the response is stopped', async () => {
+    serve({ id: 'qwen', file: 'qwen.gguf' });
+    const stopped = new Error('stopped');
+    const controller = new AbortController();
+    const lock = {
+      acquire: jest.fn(async () => {
+        controller.abort(stopped);
+        return null;
+      }),
+      extend: jest.fn(),
+      release: jest.fn(),
+    };
+    await expect(
+      generateStableDiffusionImage(
+        { prompt: 'a cat' },
+        { url, req: req(), lock, signal: controller.signal },
+      ),
+    ).rejects.toBe(stopped);
+    expect(lock.acquire).toHaveBeenCalledTimes(1);
+  });
+
   describe('making a video clip', () => {
     const clip = {
       base64: 'UklGRg==',

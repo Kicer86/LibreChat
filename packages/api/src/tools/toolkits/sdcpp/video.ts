@@ -1,6 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import type { SdcppProbe } from './catalog';
 import type { SdcppPost } from './load';
+import { sleepUnlessAborted } from './load';
 
 /** A finished clip: an animated WebP (or AVI), with what sd-server says it rendered. */
 export interface SdcppVideo {
@@ -73,24 +74,6 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 
 const positiveInteger = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
-
-function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
 
 interface JobState {
   status: string;
@@ -169,7 +152,7 @@ export async function runSdcppVideoJob({
   signal,
   budgetMs,
   now = Date.now,
-  sleep = abortableSleep,
+  sleep = sleepUnlessAborted,
 }: RunSdcppVideoJobParams): Promise<SdcppVideoJobResult> {
   const deadline = now() + budgetMs;
   const submitted = await client.post(`${url}/sdcpp/v1/vid_gen`, body);

@@ -142,11 +142,30 @@ export interface WithSdcppServerLockParams {
   url: string;
   /** How long to wait for another holder before giving up. */
   waitMs: number;
+  /** Fires when the caller gives up (the user stopped the response); waiting ends with its reason. */
+  signal?: AbortSignal;
   now?: () => number;
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
-const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Waits `ms`, or rejects with `signal`'s reason as soon as it fires. */
+export function sleepUnlessAborted(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 /** Why the server lock could not protect a task: still held by another, or lost while held. */
 export class SdcppLockError extends Error {
@@ -171,24 +190,40 @@ export class SdcppLockError extends Error {
  * it fired; the call then throws `SdcppLockError` (`lost`) even if the task finished, since its
  * result was not protected. A renewal answered after that does not bring the lease back.
  * Aborting a request does not stop work sd-server already started. Throws `SdcppLockError`
- * (`busy`) when the lock is not free within `waitMs`.
+ * (`busy`) when the lock is not free within `waitMs`. When `signal` fires while waiting, no
+ * further attempt is made and the call rejects with its reason; a lock acquired as it fires is
+ * released again.
  */
 export async function withSdcppServerLock<T>(
-  { lock, url, waitMs, now = Date.now, sleep = defaultSleep }: WithSdcppServerLockParams,
+  {
+    lock,
+    url,
+    waitMs,
+    signal,
+    now = Date.now,
+    sleep = sleepUnlessAborted,
+  }: WithSdcppServerLockParams,
   task: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const key = `stable-diffusion:sdcpp:${url}`;
   const deadline = now() + waitMs;
+  signal?.throwIfAborted();
   /** When the last acquire or renewal was sent: the lease runs at least that long from there. */
   let sentAt = now();
   let token = await lock.acquire(key, LOCK_TTL_MS);
   while (!token) {
+    signal?.throwIfAborted();
     if (now() >= deadline) {
       throw new SdcppLockError('busy', `server lock still held after ${waitMs} ms`);
     }
-    await sleep(LOCK_RETRY_MS);
+    await sleep(LOCK_RETRY_MS, signal);
+    signal?.throwIfAborted();
     sentAt = now();
     token = await lock.acquire(key, LOCK_TTL_MS);
+  }
+  if (signal?.aborted) {
+    await lock.release(key, token).catch(() => undefined);
+    signal.throwIfAborted();
   }
 
   const held = token;

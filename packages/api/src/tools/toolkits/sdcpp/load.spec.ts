@@ -171,6 +171,57 @@ describe('withSdcppServerLock', () => {
     expect(lock.acquire).toHaveBeenCalledWith(`stable-diffusion:sdcpp:${url}`, 60_000);
   });
 
+  describe('when the caller stops waiting', () => {
+    const stopped = new Error('stopped');
+    const held = () => ({
+      acquire: jest.fn(async (): Promise<string | null> => null),
+      extend: jest.fn(),
+      release: jest.fn(async () => true),
+    });
+
+    it('makes no attempt once stopped', async () => {
+      const lock = held();
+      const controller = new AbortController();
+      controller.abort(stopped);
+      const task = jest.fn();
+      await expect(
+        withSdcppServerLock({ lock, url, waitMs: 1000, signal: controller.signal }, task),
+      ).rejects.toBe(stopped);
+      expect(lock.acquire).not.toHaveBeenCalled();
+      expect(task).not.toHaveBeenCalled();
+    });
+
+    it('stops waiting for a held lock with the reason, not as busy', async () => {
+      const lock = held();
+      const controller = new AbortController();
+      const task = jest.fn();
+      const waiting = withSdcppServerLock(
+        { lock, url, waitMs: 60_000, signal: controller.signal },
+        task,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      controller.abort(stopped);
+      await expect(waiting).rejects.toBe(stopped);
+      expect(lock.acquire).toHaveBeenCalledTimes(1);
+      expect(task).not.toHaveBeenCalled();
+    });
+
+    it('gives back a lock acquired as the caller stopped', async () => {
+      const lock = held();
+      const controller = new AbortController();
+      lock.acquire.mockImplementationOnce(async () => {
+        controller.abort(stopped);
+        return 'token';
+      });
+      const task = jest.fn();
+      await expect(
+        withSdcppServerLock({ lock, url, waitMs: 1000, signal: controller.signal }, task),
+      ).rejects.toBe(stopped);
+      expect(lock.release).toHaveBeenCalledWith(`stable-diffusion:sdcpp:${url}`, 'token');
+      expect(task).not.toHaveBeenCalled();
+    });
+  });
+
   describe('when the lease is lost', () => {
     beforeEach(() => jest.useFakeTimers());
     afterEach(() => jest.useRealTimers());
