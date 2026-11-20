@@ -444,6 +444,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     ownerScope?: FileOwnerScope,
   ) => Promise<IMongoFile[]>;
   getUserCodeFiles: (fileIds: string[], ownerScope: FileOwnerScope) => Promise<IMongoFile[]>;
+  getUserImageFiles: (fileIds: string[], ownerScope: FileOwnerScope) => Promise<IMongoFile[]>;
   getDeferredProvisionFiles: (
     fileIds: string[],
     ownerScope: FileOwnerScope,
@@ -1191,6 +1192,37 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
       return results ?? [];
     } catch (error) {
       logger.error('[getUserCodeFiles] Error retrieving user code files:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Retrieves the owner's image files (records with dimensions) by ID, for image tools given
+   * image IDs that are not attached to the current request, such as images generated earlier.
+   * @param fileIds - Array of file_id strings to search for
+   * @param ownerScope - The user (and tenant) the files must belong to
+   * @returns Files that exist, belong to the owner and carry width and height
+   */
+  async function getUserImageFiles(
+    fileIds: string[],
+    ownerScope: FileOwnerScope,
+  ): Promise<IMongoFile[]> {
+    if (!fileIds || fileIds.length === 0) {
+      return [];
+    }
+
+    try {
+      const filter = withOwnerScope(
+        {
+          file_id: { $in: fileIds },
+          width: { $exists: true },
+          height: { $exists: true },
+        },
+        ownerScope,
+      );
+      return (await getFiles(filter, null, { text: 0 })) ?? [];
+    } catch (error) {
+      logger.error('[getUserImageFiles] Error retrieving user image files:', error);
       return [];
     }
   }
@@ -2039,6 +2071,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     getToolFilesByIds,
     getCodeGeneratedFiles,
     getUserCodeFiles,
+    getUserImageFiles,
     getDeferredProvisionFiles,
     claimCodeFile,
     commitCodeFile,

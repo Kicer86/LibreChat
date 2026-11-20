@@ -3212,6 +3212,55 @@ describe('File Methods', () => {
     });
   });
 
+  describe('getUserImageFiles', () => {
+    const createImage = (
+      file_id: string,
+      user: mongoose.Types.ObjectId,
+      extra: Partial<IMongoFile> = {},
+    ) =>
+      runAsSystem(() =>
+        fileMethods.createFile({
+          file_id,
+          user,
+          tenantId: 'tenant-a',
+          filename: `${file_id}.png`,
+          filepath: `/images/${file_id}.png`,
+          source: 'local',
+          type: 'image/png',
+          bytes: 100,
+          width: 512,
+          height: 512,
+          context: FileContext.image_generation,
+          ...extra,
+        }),
+      );
+
+    it("returns only the owner's images that carry dimensions", async () => {
+      const ownerId = new mongoose.Types.ObjectId();
+      const otherId = new mongoose.Types.ObjectId();
+      const [image, foreign, noDims, otherTenant] = [uuidv4(), uuidv4(), uuidv4(), uuidv4()];
+      await createImage(image, ownerId);
+      await createImage(foreign, otherId);
+      await createImage(noDims, ownerId, { width: undefined, height: undefined });
+      await createImage(otherTenant, ownerId, { tenantId: 'tenant-b' });
+
+      const files = await fileMethods.getUserImageFiles([image, foreign, noDims, otherTenant], {
+        userId: ownerId.toString(),
+        tenantId: 'tenant-a',
+      });
+
+      expect(files.map((file) => file.file_id)).toEqual([image]);
+      expect(files[0]).toMatchObject({ width: 512, height: 512, filepath: `/images/${image}.png` });
+    });
+
+    it('returns nothing without file IDs', async () => {
+      const files = await fileMethods.getUserImageFiles([], {
+        userId: new mongoose.Types.ObjectId().toString(),
+      });
+      expect(files).toEqual([]);
+    });
+  });
+
   describe('getUserCodeFiles', () => {
     it('returns only authenticated owner code-env uploads', async () => {
       const ownerId = new mongoose.Types.ObjectId();
