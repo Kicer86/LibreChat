@@ -615,12 +615,18 @@ registration:
 #   imageModelsMs: 5000 # reading the Stable Diffusion server's model list when a chat turn starts
 
 # Models the stable-diffusion tool may use on a stable-diffusion.cpp server (SD_WEBUI_URL).
-# IDs are the server's recipe IDs (GET /sdcpp/v1/recipes). Other Stable Diffusion servers ignore this.
+# IDs are the server's recipe IDs (GET /sdcpp/v1/recipes). Other Stable Diffusion servers ignore `models`.
 # stableDiffusion:
 #   models:
 #     include: ['local-qwen-image-21-q8'] # default: every model the server can load
 #     exclude: ['local-ltx25-dev-q8'] # never used, even when included
 #     defaultImage: 'local-qwen-image-21-q8' # used when no model is requested and the loaded one is excluded or makes video
+#   # Upper bounds on what one generation may ask for, on any Stable Diffusion server. Omitted keys keep the default shown;
+#   # a stable-diffusion.cpp server's own lower limits (GET /sdcpp/v1/capabilities) still apply.
+#   limits:
+#     maxImages: 4 # images one call may make
+#     maxSteps: 50 # sampling steps per image
+#     maxSize: 2048 # longest side of an image, in pixels
 
 # Newest violations kept per user in the general violation log.
 # violationLog:

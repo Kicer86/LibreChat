@@ -41,6 +41,7 @@ describe('prepareStableDiffusionRequest', () => {
       payload: { prompt: 'a cat', cfg_scale: 4.5, steps: 22 },
       config: {},
       backend: 'sdcpp',
+      sizing: { backend: 'sdcpp', maxSize: { width: 2048, height: 2048 } },
     });
     expect(applySSRFSafeAgentIfDirect).not.toHaveBeenCalled();
   });

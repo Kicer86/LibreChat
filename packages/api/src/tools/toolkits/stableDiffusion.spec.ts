@@ -3,6 +3,7 @@ import type { ImageInput } from './images';
 import {
   sdcppSizeTarget,
   fitStableDiffusionSize,
+  resolveStableDiffusionSize,
   buildStableDiffusionRequest,
   detectStableDiffusionServer,
   clearStableDiffusionBackendCache,
@@ -96,6 +97,31 @@ describe('buildStableDiffusionRequest', () => {
     });
   });
 
+  it('sends the settings asked for in place of the defaults', () => {
+    const params = { steps: 8, cfg_scale: 1, seed: 42, sampler_name: 'euler_a', width: 768 };
+    expect(buildStableDiffusionRequest({ prompt: 'a cat', params }).payload).toEqual({
+      prompt: 'a cat',
+      negative_prompt: undefined,
+      cfg_scale: 1,
+      steps: 8,
+      seed: 42,
+      sampler_name: 'euler_a',
+      width: 768,
+      height: 1024,
+    });
+    expect(
+      buildStableDiffusionRequest({ prompt: 'a cat', backend: 'sdcpp', params }).payload,
+    ).toEqual({
+      prompt: 'a cat',
+      negative_prompt: undefined,
+      cfg_scale: 1,
+      steps: 8,
+      seed: 42,
+      sampler_name: 'euler_a',
+      width: 768,
+    });
+  });
+
   it('still fits img2img to the input image on stable-diffusion.cpp', () => {
     const { payload } = buildStableDiffusionRequest({
       prompt: 'x',
@@ -103,6 +129,57 @@ describe('buildStableDiffusionRequest', () => {
       backend: 'sdcpp',
     });
     expect(payload).toMatchObject({ width: 576, height: 1024, cfg_scale: 4.5, steps: 22 });
+  });
+});
+
+describe('resolveStableDiffusionSize', () => {
+  const max = { width: 2048, height: 2048 };
+
+  it('rounds the sides asked for to the target multiple, within the largest size', () => {
+    const target = { longestSide: 1024, multiple: 32 };
+    expect(
+      resolveStableDiffusionSize({ backend: 'sdcpp', width: 500, height: 300, target }),
+    ).toEqual({ width: 512, height: 288 });
+    expect(
+      resolveStableDiffusionSize({
+        backend: 'sdcpp',
+        width: 1000,
+        target,
+        maxSize: { width: 1000, height: 1000 },
+      }),
+    ).toEqual({ width: 992 });
+  });
+
+  it('leaves the sides not asked for to the stable-diffusion.cpp recipe, unrounded without a model', () => {
+    expect(resolveStableDiffusionSize({ backend: 'sdcpp', height: 500 })).toEqual({ height: 500 });
+    expect(resolveStableDiffusionSize({ backend: 'sdcpp' })).toEqual({});
+  });
+
+  it('fills the other side with the WebUI default and rounds to 64', () => {
+    expect(resolveStableDiffusionSize({ backend: 'webui', width: 500 })).toEqual({
+      width: 512,
+      height: 1024,
+    });
+  });
+
+  it.each([
+    [{ width: 800 }, { width: 800, height: 448 }],
+    [{ height: 900 }, { width: 1600, height: 896 }],
+    [
+      { width: 640, height: 640 },
+      { width: 640, height: 640 },
+    ],
+    [{}, { width: 1024, height: 576 }],
+  ])('keeps the img2img input shape for %j', (asked, expected) => {
+    expect(
+      resolveStableDiffusionSize({
+        backend: 'sdcpp',
+        image: { width: 1600, height: 900 },
+        target: { longestSide: 1024, multiple: 32 },
+        maxSize: max,
+        ...asked,
+      }),
+    ).toEqual(expected);
   });
 });
 

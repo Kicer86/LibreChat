@@ -3317,7 +3317,17 @@ describe('Stable Diffusion configuration', () => {
       stableDiffusion,
     );
   });
+  it('accepts limits on what one generation may ask for', () => {
+    const stableDiffusion = { limits: { maxImages: 2, maxSteps: 30, maxSize: 1536 } };
+    expect(configSchema.parse({ version: '1.0', stableDiffusion }).stableDiffusion).toEqual(
+      stableDiffusion,
+    );
+  });
   it.each([
+    { limits: { maxImages: 0 } },
+    { limits: { maxSteps: 2.5 } },
+    { limits: { maxSize: 32 } },
+    { limits: { maxCount: 2 } },
     { models: { include: [''] } },
     { models: { defaultImage: 1 } },
     { models: { allow: ['qwen'] } },

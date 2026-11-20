@@ -3109,6 +3109,22 @@ export const stableDiffusionConfigSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * Upper bounds on what the calling model may ask one generation for, on any server; omitted
+     * keys use the defaults in `@librechat/api` (`STABLE_DIFFUSION_LIMITS`). A stable-diffusion.cpp
+     * server's own, lower limits still apply.
+     */
+    limits: z
+      .object({
+        /** Images one call may make. */
+        maxImages: z.number().int().min(1).optional(),
+        /** Sampling steps one image may take. */
+        maxSteps: z.number().int().min(1).optional(),
+        /** Longest side, in pixels, of a generated image. */
+        maxSize: z.number().int().min(64).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

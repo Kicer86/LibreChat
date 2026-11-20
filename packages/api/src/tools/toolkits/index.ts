@@ -6,4 +6,5 @@ export * from './mapping';
 export * from './oai';
 export * from './sdcpp';
 export * from './stableDiffusion';
+export * from './stableDiffusionParams';
 export * from './web';

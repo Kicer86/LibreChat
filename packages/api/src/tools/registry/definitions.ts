@@ -207,6 +207,44 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
       description:
         'ID of the model to generate with, when the tool context lists the available models. Omit to keep the loaded model; loading another one takes extra time.',
     },
+    width: {
+      type: 'integer',
+      description:
+        "Image width in pixels, e.g. for a wide or tall format. Rounded to the model's size multiple. Omit for the model's default size; with image_ids, giving only one side keeps the image's aspect ratio.",
+    },
+    height: {
+      type: 'integer',
+      description:
+        "Image height in pixels. Rounded to the model's size multiple. Omit for the model's default size.",
+    },
+    steps: {
+      type: 'integer',
+      minimum: 1,
+      description:
+        "Sampling steps; more take longer. Omit for the model's default, which suits it (distilled models need few steps).",
+    },
+    cfg_scale: {
+      type: 'number',
+      minimum: 0,
+      description:
+        "How strictly the image follows the prompt (CFG scale). Omit for the model's default; distilled models need about 1.",
+    },
+    seed: {
+      type: 'integer',
+      minimum: -1,
+      description:
+        'Seed for the random noise. The same seed, prompt and settings give the same image again. Omit, or pass -1, for a random one.',
+    },
+    sampler: {
+      type: 'string',
+      description:
+        "Sampling method, e.g. euler or euler_a. Omit for the model's default unless the user asks for one.",
+    },
+    scheduler: {
+      type: 'string',
+      description:
+        "Noise schedule, e.g. karras or simple. Omit for the model's default unless the user asks for one.",
+    },
   },
   required: ['prompt'],
 };

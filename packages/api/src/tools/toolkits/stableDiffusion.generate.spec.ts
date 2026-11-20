@@ -68,7 +68,16 @@ function serve(
   const files = [...(generatedFiles ?? [])];
   mockGet.mockImplementation(async (requestUrl: string) => {
     if (requestUrl.endsWith('/sdcpp/v1/capabilities')) {
-      return { status: 200, data: { current_mode: 'img_gen', defaults: {} } };
+      return {
+        status: 200,
+        data: {
+          current_mode: 'img_gen',
+          defaults: {},
+          samplers: ['euler', 'euler_a'],
+          schedulers: ['karras', 'simple'],
+          limits: { min_width: 64, max_width: 4096, min_height: 64, max_height: 4096 },
+        },
+      };
     }
     if (requestUrl.endsWith('/sdcpp/v1/recipes')) {
       const recipesStatus = delays.recipesStatus ?? 200;
@@ -164,6 +173,41 @@ describe('generateStableDiffusionImage', () => {
       context,
     );
     expect(img2img()).toMatchObject({ width: 768, height: 448 });
+  });
+
+  it("sends the settings asked for, sized for the loaded model's multiple", async () => {
+    serve({ id: 'qwen', file: 'qwen.gguf' });
+    const result = await generateStableDiffusionImage(
+      { prompt: 'a cat', width: 500, steps: 8, seed: 7, sampler: 'Euler_A', scheduler: 'Karras' },
+      { url, req: req() },
+    );
+    expect(result).toEqual({ data: generated('qwen.gguf'), model: 'qwen' });
+    const txt2img = mockPost.mock.calls.find(([requestUrl]) =>
+      String(requestUrl).endsWith('/txt2img'),
+    );
+    expect(txt2img?.[1]).toEqual({
+      prompt: 'a cat',
+      negative_prompt: undefined,
+      width: 512,
+      steps: 8,
+      cfg_scale: 4.5,
+      seed: 7,
+      sampler_name: 'euler_a',
+      scheduler: 'karras',
+    });
+  });
+
+  it('refuses settings the server would ignore before locking or loading anything', async () => {
+    serve({ id: 'qwen', file: 'qwen.gguf' });
+    const result = await generateStableDiffusionImage(
+      { prompt: 'a cat', model: 'flux', scheduler: 'exponential' },
+      { url, req: req() },
+    );
+    expect(result).toEqual({
+      error:
+        'Unknown scheduler "exponential". Omit "scheduler" for the model\'s default, or use one of: karras, simple.',
+    });
+    expect(mockPost).not.toHaveBeenCalled();
   });
 
   it('gives the generation its own budget after a slow model load', async () => {
