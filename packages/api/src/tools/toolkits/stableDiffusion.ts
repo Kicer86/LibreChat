@@ -639,6 +639,7 @@ export async function generateStableDiffusionImage(
       config: modelsConfig,
       requested,
       withImage: request.image != null,
+      video: false,
       readyOutsideCatalog: !status.recipe && hasReadySdcppModel(status),
     });
     if (!choice.ok) {

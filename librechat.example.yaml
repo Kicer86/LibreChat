@@ -621,6 +621,7 @@ registration:
 #     include: ['local-qwen-image-21-q8'] # default: every model the server can load
 #     exclude: ['local-ltx25-dev-q8'] # never used, even when included
 #     defaultImage: 'local-qwen-image-21-q8' # used when no model is requested and the loaded one is excluded or makes video
+#     defaultVideo: 'local-ltx25-distilled-q4' # used when a clip is asked for without a model and the loaded one is excluded or makes images
 #   # Upper bounds on what one generation may ask for, on any Stable Diffusion server. Omitted keys keep the default shown;
 #   # a stable-diffusion.cpp server's own lower limits (GET /sdcpp/v1/capabilities) still apply.
 #   limits:

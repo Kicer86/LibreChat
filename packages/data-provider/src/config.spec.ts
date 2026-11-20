@@ -3311,7 +3311,12 @@ describe('Stable Diffusion configuration', () => {
   });
   it('accepts included, excluded and default models', () => {
     const stableDiffusion = {
-      models: { include: ['qwen', 'flux'], exclude: ['flux'], defaultImage: 'qwen' },
+      models: {
+        include: ['qwen', 'flux', 'ltx'],
+        exclude: ['flux'],
+        defaultImage: 'qwen',
+        defaultVideo: 'ltx',
+      },
     };
     expect(configSchema.parse({ version: '1.0', stableDiffusion }).stableDiffusion).toEqual(
       stableDiffusion,
@@ -3330,6 +3335,7 @@ describe('Stable Diffusion configuration', () => {
     { limits: { maxCount: 2 } },
     { models: { include: [''] } },
     { models: { defaultImage: 1 } },
+    { models: { defaultVideo: '' } },
     { models: { allow: ['qwen'] } },
     { defaultModel: 'qwen' },
   ])('rejects %j', (stableDiffusion) => {

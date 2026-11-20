@@ -14,7 +14,8 @@ const qwen = model('qwen');
 const flux = model('flux');
 const textOnly = model('text-only', { acceptsImage: false });
 const ltx = model('ltx', { mode: 'video' });
-const models = [textOnly, qwen, flux, ltx];
+const wan = model('wan', { mode: 'video', acceptsImage: false });
+const models = [textOnly, qwen, flux, ltx, wan];
 const catalog = (loaded?: string): SdcppCatalog => ({ models, ...(loaded && { loaded }) });
 
 describe('allowedSdcppModels', () => {
@@ -38,14 +39,61 @@ describe('chooseSdcppModel', () => {
   });
 
   it.each([
-    ['missing', {}, 'unknown_model'],
-    ['flux', { exclude: ['flux'] }, 'unknown_model'],
-    ['flux', { include: ['qwen'] }, 'unknown_model'],
-    ['ltx', {}, 'wrong_mode'],
-  ])('refuses the requested model %s with %j', (requested, config, code) => {
-    expect(chooseSdcppModel({ catalog: catalog('qwen'), config, requested })).toMatchObject({
+    ['missing', {}, undefined, 'unknown_model'],
+    ['flux', { exclude: ['flux'] }, undefined, 'unknown_model'],
+    ['flux', { include: ['qwen'] }, undefined, 'unknown_model'],
+    ['ltx', {}, false, 'wrong_mode'],
+    ['qwen', {}, true, 'wrong_mode'],
+  ])('refuses the requested model %s with %j (video: %s)', (requested, config, video, code) => {
+    expect(chooseSdcppModel({ catalog: catalog('qwen'), config, requested, video })).toMatchObject({
       ok: false,
       error: { code },
+    });
+  });
+
+  it('makes a clip with a requested video model, also without "video"', () => {
+    expect(chooseSdcppModel({ catalog: catalog('qwen'), requested: 'ltx' })).toEqual({
+      ok: true,
+      model: ltx,
+    });
+    expect(chooseSdcppModel({ catalog: catalog('qwen'), requested: 'ltx', video: true })).toEqual({
+      ok: true,
+      model: ltx,
+    });
+  });
+
+  it('keeps a loaded video model for a clip', () => {
+    expect(
+      chooseSdcppModel({ catalog: catalog('wan'), config: { defaultVideo: 'ltx' }, video: true }),
+    ).toEqual({ ok: true, model: wan });
+  });
+
+  it('switches from a loaded image model to the default video model', () => {
+    expect(
+      chooseSdcppModel({ catalog: catalog('qwen'), config: { defaultVideo: 'wan' }, video: true }),
+    ).toEqual({ ok: true, model: wan });
+    expect(chooseSdcppModel({ catalog: catalog('qwen'), video: true })).toEqual({
+      ok: true,
+      model: ltx,
+    });
+  });
+
+  it('does not make a clip with a model outside the catalog', () => {
+    expect(
+      chooseSdcppModel({ catalog: catalog(), readyOutsideCatalog: true, video: true }),
+    ).toEqual({ ok: true, model: ltx });
+  });
+
+  it('reports when no allowed model makes video', () => {
+    expect(
+      chooseSdcppModel({
+        catalog: catalog('qwen'),
+        config: { exclude: ['ltx', 'wan'] },
+        video: true,
+      }),
+    ).toEqual({
+      ok: false,
+      error: { code: 'no_model', message: 'No available model can make video.' },
     });
   });
 

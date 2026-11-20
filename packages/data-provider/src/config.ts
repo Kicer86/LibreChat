@@ -3106,6 +3106,8 @@ export const stableDiffusionConfigSchema = z
         exclude: z.array(z.string().min(1)).optional(),
         /** Image model used when none is requested and the loaded one is excluded or makes video. */
         defaultImage: z.string().min(1).optional(),
+        /** Video model used when a clip is asked for without a model and the loaded one makes images. */
+        defaultVideo: z.string().min(1).optional(),
       })
       .strict()
       .optional(),
