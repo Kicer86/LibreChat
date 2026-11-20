@@ -11,6 +11,10 @@ const catalog: SdcppCatalog = {
       mode: 'image',
       acceptsImage: true,
       sizeMultiple: 32,
+      width: 1024,
+      height: 1024,
+      steps: 20,
+      cfgScale: 1,
     },
     { id: 'sd15', name: 'SD 1.5', mode: 'image', acceptsImage: false, sizeMultiple: 64 },
     { id: 'ltx', name: 'LTX 2.5', mode: 'video', acceptsImage: true, sizeMultiple: 32 },
@@ -22,7 +26,7 @@ describe('formatSdcppModels', () => {
     expect(formatSdcppModels(catalog)).toBe(
       [
         'Image models available to `stable-diffusion` (pass the ID in "model"; omit "model" to keep the loaded one, since loading another model takes extra time):',
-        '\t- qwen (loaded): Qwen Image 2.1 (text to image, img2img). Qwen Image 2.1 with Q8 diffusion weights.',
+        '\t- qwen (loaded): Qwen Image 2.1 (text to image, img2img; defaults: 1024x1024, 20 steps, cfg_scale 1). Qwen Image 2.1 with Q8 diffusion weights.',
         '\t- sd15: SD 1.5 (text to image only).',
       ].join('\n'),
     );

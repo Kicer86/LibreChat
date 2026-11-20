@@ -72,6 +72,8 @@ describe('parseSdcppRecipes', () => {
         sizeMultiple: 32,
         width: 1024,
         height: 1024,
+        steps: 20,
+        cfgScale: 1,
       },
       {
         id: 'local-ltx25-distilled-q4',

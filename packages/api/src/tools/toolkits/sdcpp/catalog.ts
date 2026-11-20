@@ -18,6 +18,9 @@ export interface SdcppModel {
   /** The recipe's own output size, which the server uses when a request gives none. */
   width?: number;
   height?: number;
+  /** The recipe's sampling steps and CFG scale, used when a request gives none. */
+  steps?: number;
+  cfgScale?: number;
 }
 
 export interface SdcppCatalog {
@@ -62,6 +65,9 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 const positiveInteger = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 
+const finiteNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+
 const nonEmptyString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 
@@ -78,6 +84,8 @@ function parseRecipe(recipe: unknown): SdcppModel | undefined {
   const mode: SdcppModelMode =
     defaults.video_frames != null || isPlainObject(recipe.video_constraints) ? 'video' : 'image';
   const description = nonEmptyString(recipe.description);
+  const steps = positiveInteger(defaults.steps);
+  const cfgScale = finiteNumber(defaults.cfg_scale);
   return {
     id,
     name: nonEmptyString(recipe.name) ?? id,
@@ -87,6 +95,8 @@ function parseRecipe(recipe: unknown): SdcppModel | undefined {
     sizeMultiple: positiveInteger(recipe.size_multiple) ?? DEFAULT_SIZE_MULTIPLE,
     width: positiveInteger(defaults.width),
     height: positiveInteger(defaults.height),
+    ...(steps && { steps }),
+    ...(cfgScale != null && { cfgScale }),
   };
 }
 
