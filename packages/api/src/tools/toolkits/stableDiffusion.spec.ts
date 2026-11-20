@@ -1,6 +1,11 @@
 import type { TFile } from 'librechat-data-provider';
 import type { ImageInput } from './images';
-import { buildStableDiffusionRequest, fitStableDiffusionSize } from './stableDiffusion';
+import {
+  fitStableDiffusionSize,
+  buildStableDiffusionRequest,
+  detectStableDiffusionBackend,
+  clearStableDiffusionBackendCache,
+} from './stableDiffusion';
 
 const input = (width?: number, height?: number): ImageInput => ({
   file: { file_id: 'img-1', width, height } as TFile,
@@ -55,5 +60,60 @@ describe('buildStableDiffusionRequest', () => {
     const { payload } = buildStableDiffusionRequest({ prompt: 'x', image: input() });
     expect(payload).not.toHaveProperty('denoising_strength');
     expect(payload).toMatchObject({ width: 1024, height: 1024 });
+  });
+
+  it('leaves steps, CFG scale and the size to stable-diffusion.cpp model defaults', () => {
+    expect(buildStableDiffusionRequest({ prompt: 'a cat', backend: 'sdcpp' })).toEqual({
+      path: '/sdapi/v1/txt2img',
+      payload: { prompt: 'a cat' },
+    });
+  });
+
+  it('still fits img2img to the input image on stable-diffusion.cpp', () => {
+    const { payload } = buildStableDiffusionRequest({
+      prompt: 'x',
+      image: input(900, 1600),
+      backend: 'sdcpp',
+    });
+    expect(payload).toMatchObject({ width: 576, height: 1024 });
+    expect(payload).not.toHaveProperty('steps');
+    expect(payload).not.toHaveProperty('cfg_scale');
+  });
+});
+
+describe('detectStableDiffusionBackend', () => {
+  const url = 'http://sd.local:7860';
+  const probe = jest.fn();
+
+  beforeEach(() => {
+    clearStableDiffusionBackendCache();
+    probe.mockReset();
+  });
+
+  it('detects stable-diffusion.cpp by its capabilities endpoint and caches the answer', async () => {
+    probe.mockResolvedValue({ status: 200, data: { current_mode: 'img_gen' } });
+    await expect(detectStableDiffusionBackend(url, probe, 0)).resolves.toBe('sdcpp');
+    await expect(detectStableDiffusionBackend(url, probe, 1000)).resolves.toBe('sdcpp');
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledWith(`${url}/sdcpp/v1/capabilities`);
+  });
+
+  it('treats a missing endpoint as another WebUI server and asks again after the TTL', async () => {
+    probe.mockResolvedValue({ status: 404, data: 'Not Found' });
+    await expect(detectStableDiffusionBackend(url, probe, 0)).resolves.toBe('webui');
+    await expect(detectStableDiffusionBackend(url, probe, 1000)).resolves.toBe('webui');
+    expect(probe).toHaveBeenCalledTimes(1);
+    await detectStableDiffusionBackend(url, probe, 10 * 60 * 1000);
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['an unreachable server', () => probe.mockRejectedValueOnce(new Error('ECONNREFUSED'))],
+    ['a server error', () => probe.mockResolvedValueOnce({ status: 503, data: '' })],
+  ])('falls back to webui without caching for %s', async (_case, fail) => {
+    fail();
+    await expect(detectStableDiffusionBackend(url, probe, 0)).resolves.toBe('webui');
+    probe.mockResolvedValueOnce({ status: 200, data: {} });
+    await expect(detectStableDiffusionBackend(url, probe, 1)).resolves.toBe('sdcpp');
   });
 });

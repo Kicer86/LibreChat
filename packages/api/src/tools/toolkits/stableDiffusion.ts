@@ -12,6 +12,59 @@ const GENERATION_DEFAULTS = {
   height: IMAGE_SIZE,
 };
 
+/**
+ * The server behind `SD_WEBUI_URL`. stable-diffusion.cpp's `sd-server` fills omitted generation
+ * parameters from the loaded model's own defaults, so it gets no hardcoded ones; other WebUI
+ * servers (AUTOMATIC1111, Forge) fall back to SD 1.5-era values and keep getting ours.
+ */
+export type StableDiffusionBackend = 'sdcpp' | 'webui';
+
+/** How long a detected backend is reused before the server is asked again. */
+const BACKEND_CACHE_TTL_MS = 5 * 60 * 1000;
+const BACKEND_CACHE_MAX_ENTRIES = 100;
+const backendCache = new Map<string, { backend: StableDiffusionBackend; expiresAt: number }>();
+
+/** Fetches a URL, resolving with any HTTP status; rejects only when no response arrived. */
+export type StableDiffusionProbe = (url: string) => Promise<{ status: number; data: unknown }>;
+
+/**
+ * Detects whether `url` is served by stable-diffusion.cpp, which answers
+ * `/sdcpp/v1/capabilities`. A definite answer is cached per URL; when the server could not be
+ * reached the result falls back to `webui` without caching, so the next call asks again.
+ */
+export async function detectStableDiffusionBackend(
+  url: string,
+  probe: StableDiffusionProbe,
+  now: number = Date.now(),
+): Promise<StableDiffusionBackend> {
+  const cached = backendCache.get(url);
+  if (cached && cached.expiresAt > now) {
+    return cached.backend;
+  }
+
+  let backend: StableDiffusionBackend;
+  try {
+    const { status, data } = await probe(`${url}/sdcpp/v1/capabilities`);
+    if (status >= 500) {
+      return 'webui';
+    }
+    backend = status === 200 && data != null && typeof data === 'object' ? 'sdcpp' : 'webui';
+  } catch {
+    return 'webui';
+  }
+
+  if (backendCache.size >= BACKEND_CACHE_MAX_ENTRIES) {
+    backendCache.clear();
+  }
+  backendCache.set(url, { backend, expiresAt: now + BACKEND_CACHE_TTL_MS });
+  return backend;
+}
+
+/** Forgets detected backends (for tests). */
+export function clearStableDiffusionBackendCache(): void {
+  backendCache.clear();
+}
+
 export interface StableDiffusionRequestParams {
   prompt: string;
   negative_prompt?: string;
@@ -19,6 +72,8 @@ export interface StableDiffusionRequestParams {
   image?: ImageInput;
   /** How much img2img may change the image (0–1); omitted, the server default applies. */
   denoising_strength?: number;
+  /** Defaults to `webui`, which sends this tool's fixed generation parameters. */
+  backend?: StableDiffusionBackend;
 }
 
 export interface StableDiffusionRequest {
@@ -44,15 +99,20 @@ export function fitStableDiffusionSize(
 
 /**
  * Builds a Stable Diffusion WebUI API request (`txt2img`, or `img2img` when an image is given).
- * The same API is served by AUTOMATIC1111, Forge and stable-diffusion.cpp's `sd-server`.
+ * The same API is served by AUTOMATIC1111, Forge and stable-diffusion.cpp's `sd-server`; for the
+ * latter, steps, CFG scale and the txt2img size are left to the loaded model's defaults.
  */
 export function buildStableDiffusionRequest({
   prompt,
   negative_prompt,
   image,
   denoising_strength,
+  backend = 'webui',
 }: StableDiffusionRequestParams): StableDiffusionRequest {
-  const payload: Record<string, unknown> = { prompt, negative_prompt, ...GENERATION_DEFAULTS };
+  const payload: Record<string, unknown> = { prompt, negative_prompt };
+  if (backend === 'webui') {
+    Object.assign(payload, GENERATION_DEFAULTS);
+  }
   if (!image) {
     return { path: '/sdapi/v1/txt2img', payload };
   }
