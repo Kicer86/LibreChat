@@ -4,3 +4,4 @@ export * from './context';
 export * from './load';
 export * from './select';
 export * from './frames';
+export * from './video';
