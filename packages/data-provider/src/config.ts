@@ -5586,6 +5586,13 @@ export const imageGenTools = new Set([
   'gemini_image_gen',
 ]);
 
+/** Tools that read the images attached to a request (the `image_edit` tool resource). */
+export const imageInputTools: ReadonlySet<string> = new Set([
+  'image_gen_oai',
+  'image_edit_oai',
+  'gemini_image_gen',
+]);
+
 /**
  * Enum for collections using infinite queries
  */

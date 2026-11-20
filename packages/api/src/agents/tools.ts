@@ -10,6 +10,7 @@ import {
 import {
   Tools,
   Constants,
+  imageInputTools,
   AgentCapabilities,
   CODE_ENVIRONMENT_READ_FILE_DEFAULT_LINES,
   CODE_ENVIRONMENT_READ_FILE_HARD_MAX_LINES,
@@ -85,9 +86,7 @@ export function isFileResourceToolName(name: string): boolean {
     isCodeFileToolName(name) ||
     isCodeSessionToolName(name) ||
     name === Tools.file_search ||
-    name === 'image_gen_oai' ||
-    name === 'image_edit_oai' ||
-    name === 'gemini_image_gen'
+    imageInputTools.has(name)
   );
 }
 

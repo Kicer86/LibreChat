@@ -91,6 +91,7 @@ const {
   ContentTypes,
   imageGenTools,
   AuthTypeEnum,
+  imageInputTools,
   EModelEndpoint,
   EToolResources,
   isActionTool,
@@ -165,7 +166,7 @@ const getActiveToolResources = (toolResources, tools) => {
     activeResources[EToolResources.file_search] = toolResources[EToolResources.file_search];
   }
   if (
-    (tools.includes('image_gen_oai') || tools.includes('gemini_image_gen')) &&
+    tools.some((tool) => imageInputTools.has(tool)) &&
     toolResources[EToolResources.image_edit] != null
   ) {
     activeResources[EToolResources.image_edit] = toolResources[EToolResources.image_edit];
