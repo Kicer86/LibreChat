@@ -46,8 +46,12 @@ export function isStableDiffusionCppCapabilities(data: unknown): boolean {
 
 /**
  * Detects whether `url` is served by stable-diffusion.cpp, which answers
- * `/sdcpp/v1/capabilities`. A definite answer is cached per URL; when the server could not be
- * reached the result falls back to `webui` without caching, so the next call asks again.
+ * `/sdcpp/v1/capabilities`. A definite answer (the contract, or any other non-5xx response) is
+ * cached per URL. When the probe fails (no response, or 5xx), the last answer for the URL is
+ * kept even if it expired, so a brief outage of the probe route does not change a known
+ * sd-server's generation parameters; the next call asks again. A URL never answered before falls
+ * back to `webui`: its fixed parameters work on every server, while omitting them on a WebUI
+ * server would render with its SD 1.5-era defaults.
  */
 export async function detectStableDiffusionBackend(
   url: string,
@@ -59,18 +63,19 @@ export async function detectStableDiffusionBackend(
     return cached.backend;
   }
 
-  let backend: StableDiffusionBackend;
+  let response: Awaited<ReturnType<StableDiffusionProbe>> | undefined;
   try {
-    const { status, data } = await probe(`${url}/sdcpp/v1/capabilities`);
-    if (status >= 500) {
-      return 'webui';
-    }
-    backend = status === 200 && isStableDiffusionCppCapabilities(data) ? 'sdcpp' : 'webui';
+    response = await probe(`${url}/sdcpp/v1/capabilities`);
   } catch {
-    return 'webui';
+    response = undefined;
+  }
+  if (!response || response.status >= 500) {
+    return cached?.backend ?? 'webui';
   }
 
-  if (backendCache.size >= BACKEND_CACHE_MAX_ENTRIES) {
+  const backend: StableDiffusionBackend =
+    response.status === 200 && isStableDiffusionCppCapabilities(response.data) ? 'sdcpp' : 'webui';
+  if (!cached && backendCache.size >= BACKEND_CACHE_MAX_ENTRIES) {
     backendCache.clear();
   }
   backendCache.set(url, { backend, expiresAt: now + BACKEND_CACHE_TTL_MS });

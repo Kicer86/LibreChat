@@ -129,4 +129,18 @@ describe('detectStableDiffusionBackend', () => {
     probe.mockResolvedValueOnce({ status: 200, data: capabilities });
     await expect(detectStableDiffusionBackend(url, probe, 1)).resolves.toBe('sdcpp');
   });
+
+  it.each([
+    ['times out', () => probe.mockRejectedValueOnce(new Error('timeout of 5000ms exceeded'))],
+    ['answers 503', () => probe.mockResolvedValueOnce({ status: 503, data: '' })],
+  ])('keeps a confirmed stable-diffusion.cpp when a later probe %s', async (_case, fail) => {
+    const expired = 10 * 60 * 1000;
+    probe.mockResolvedValueOnce({ status: 200, data: capabilities });
+    await detectStableDiffusionBackend(url, probe, 0);
+    fail();
+    await expect(detectStableDiffusionBackend(url, probe, expired)).resolves.toBe('sdcpp');
+    probe.mockResolvedValueOnce({ status: 404, data: 'Not Found' });
+    await expect(detectStableDiffusionBackend(url, probe, expired + 1)).resolves.toBe('webui');
+    expect(probe).toHaveBeenCalledTimes(3);
+  });
 });
