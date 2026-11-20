@@ -14,6 +14,7 @@ const { EModelEndpoint } = require('librechat-data-provider');
  * @returns {Promise<{buffer: Buffer, bytes: number, width: number, height: number, type: string | undefined}>}
  *          The resized image buffer, its dimensions, and the media type of the re-encoded bytes.
  *          `type` is `undefined` when sharp reports a format with no media type of its own.
+ *          An animated image (a WebP or GIF clip) keeps every frame; its dimensions are a frame's.
  * @throws Will throw an error if the resolution parameter is invalid.
  */
 async function resizeImageBuffer(inputBuffer, resolution, endpoint) {
@@ -32,10 +33,12 @@ async function resizeImageBuffer(inputBuffer, resolution, endpoint) {
 
   let newWidth, newHeight;
   let resizeOptions = { fit: 'inside', withoutEnlargement: true };
+  const metadata = await sharp(inputBuffer).metadata();
+  /** Without this sharp reads only the first frame, flattening a clip to a still image. */
+  const animated = (metadata.pages ?? 1) > 1;
 
   if (customPercent != null || customPx != null) {
     // percentage-based resize
-    const metadata = await sharp(inputBuffer).metadata();
     if (customPercent != null) {
       newWidth = Math.round(metadata.width * (customPercent / 100));
       newHeight = Math.round(metadata.height * (customPercent / 100));
@@ -50,7 +53,6 @@ async function resizeImageBuffer(inputBuffer, resolution, endpoint) {
     resizeOptions.width = maxLowRes;
     resizeOptions.height = maxLowRes;
   } else if (resolution === 'high') {
-    const metadata = await sharp(inputBuffer).metadata();
     const isWidthShorter = metadata.width < metadata.height;
 
     if (isWidthShorter) {
@@ -81,7 +83,10 @@ async function resizeImageBuffer(inputBuffer, resolution, endpoint) {
     throw new Error('Invalid resolution parameter');
   }
 
-  const resizedBuffer = await sharp(inputBuffer).rotate().resize(resizeOptions).toBuffer();
+  const resizedBuffer = await sharp(inputBuffer, { animated })
+    .rotate()
+    .resize(resizeOptions)
+    .toBuffer();
 
   const resizedMetadata = await sharp(resizedBuffer).metadata();
   return {
