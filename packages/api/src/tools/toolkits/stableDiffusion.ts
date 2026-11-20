@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { logger } from '@librechat/data-schemas';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
 import type { GeneratedImageRegistry, ImageInput, LoadImageInputsParams } from './images';
@@ -13,11 +14,13 @@ import {
   SdcppModelError,
   noteSdcppModelLoaded,
   readSdcppModelStatus,
+  formatSdcppModels,
   withSdcppServerLock,
   findSdcppModelMismatch,
 } from './sdcpp';
 import { configuredRequestBudget, getOutboundTimeoutMs } from '~/utils/timeouts';
 import { applySSRFSafeAgentIfDirect } from '~/auth/agent';
+import { buildImageToolContext } from './imageContext';
 import { createDistributedLock } from '~/cache/lock';
 import { loadImageInputs } from './images';
 
@@ -431,4 +434,47 @@ export async function generateStableDiffusionImage(
       ? { error: stableDiffusionModelFailed(second.switchedAway) }
       : second;
   });
+}
+
+export interface StableDiffusionContextParams {
+  /** Base URL of the WebUI-compatible API (`SD_WEBUI_URL`); without it no models are listed. */
+  url?: string;
+  /** A URL the user entered is reached only through the SSRF-guarded agent. */
+  isUserProvidedEndpoint?: boolean;
+  /** Images attached to the request (the `image_edit` tool resource). */
+  imageFiles?: Array<{ file_id: string }>;
+  appConfig?: AppConfig;
+}
+
+/**
+ * Tool context for `stable-diffusion` at the start of a turn: the image models it may use, when
+ * the server is stable-diffusion.cpp, and the IDs of the attached images. The model list is read
+ * within the `imageModelsMs` budget and cached; a server that cannot be reached lists none.
+ */
+export async function buildStableDiffusionToolContext({
+  url,
+  isUserProvidedEndpoint,
+  imageFiles = [],
+  appConfig,
+}: StableDiffusionContextParams): Promise<string> {
+  const images = buildImageToolContext({
+    imageFiles,
+    toolName: 'stable-diffusion',
+    contextDescription: 'image-to-image (img2img)',
+  });
+  if (!url) {
+    return images;
+  }
+  const context: StableDiffusionToolContext = { url, isUserProvidedEndpoint };
+  const catalog = await getSdcppCatalog(url, (probeUrl) =>
+    axios.get(
+      probeUrl,
+      stableDiffusionRequestConfig(context, probeUrl, {
+        ...configuredRequestBudget(appConfig, 'imageModelsMs'),
+        validateStatus: () => true,
+      }),
+    ),
+  );
+  const models = catalog ? formatSdcppModels(catalog, appConfig?.stableDiffusion?.models) : '';
+  return [models, images].filter(Boolean).join('\n\n');
 }

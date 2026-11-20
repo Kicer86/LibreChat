@@ -63,6 +63,7 @@ class StableDiffusionAPI extends Tool {
 // "prompt":"photo of a man in black clothes, half body, high detailed skin, coastline, overcast weather, wind, waves, 8k uhd, dslr, soft lighting, high quality, film grain, Fujifilm XT3"
 // "negative_prompt":"semi-realistic, cgi, 3d, render, sketch, cartoon, drawing, anime, out of frame, low quality, ugly, mutation, deformed"
 // - To change an existing image instead (img2img), pass its ID in "image_ids" and "denoising_strength" (0-1, how much it may change). img2img redraws the whole image from the prompt, so describe the full result; a color change needs about 0.85.
+// - When the tool context lists image models, set "model" only if another model suits the request better than the loaded one; loading a model takes extra time.
 // - Generate images only once per human query unless explicitly requested by the user`;
     this.description =
       "You can generate images using text with 'stable-diffusion', or change an existing image (img2img) by passing its ID in image_ids. This tool is exclusively for visual content.";

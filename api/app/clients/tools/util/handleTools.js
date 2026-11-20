@@ -34,6 +34,7 @@ const {
   resolveMCPClientCapabilityProfile,
   setMissingCodeFilesContext,
   createGeneratedImageRegistry,
+  buildStableDiffusionToolContext,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -97,17 +98,25 @@ const { distributedLock } = require('~/cache');
  * @param {Object} options Optional parameters to be passed to the tool constructor alongside authentication values.
  * @returns {() => Promise<Tool>} An Async function that, when called, asynchronously initializes and returns an instance of the tool with authentication.
  */
+/**
+ * The auth fields each user supplies, because the environment does not set them.
+ * @param {Array<string>} authFields Fields as in a tool manifest; alternates are delimited by "||".
+ * @returns {Set<string>}
+ */
+const getUserProvidedAuthFields = (authFields) =>
+  new Set(
+    authFields
+      .flatMap((authField) => authField.split('||'))
+      .filter((authField) => {
+        const value = process.env[authField];
+        return !value || value.trim() === '' || value === AuthType.USER_PROVIDED;
+      }),
+  );
+
 const loadToolWithAuth = (userId, authFields, ToolConstructor, options = {}) => {
   return async function () {
     const authValues = await loadAuthValues({ userId, authFields });
-    const userProvidedAuthFields = new Set(
-      authFields
-        .flatMap((authField) => authField.split('||'))
-        .filter((authField) => {
-          const value = process.env[authField];
-          return !value || value.trim() === '' || value === AuthType.USER_PROVIDED;
-        }),
-    );
+    const userProvidedAuthFields = getUserProvidedAuthFields(authFields);
     return new ToolConstructor({
       ...options,
       ...authValues,
@@ -127,6 +136,31 @@ const getAuthFields = (toolKey) => {
 
 /** Images generated in a request, until the tool-end callback saves them as files. */
 const generatedImages = createGeneratedImageRegistry();
+
+/**
+ * Tool context for `stable-diffusion`: the models it may use and the attached image IDs.
+ * @param {object} params
+ * @param {string} params.userId
+ * @param {ServerRequest} [params.req]
+ * @param {Array<{ file_id: string }>} [params.imageFiles]
+ * @returns {Promise<string>}
+ */
+const loadStableDiffusionToolContext = async ({ userId, req, imageFiles }) => {
+  const authFields = getAuthFields('stable-diffusion');
+  let url;
+  try {
+    const authValues = await loadAuthValues({ userId, authFields, throwError: false });
+    url = authValues.SD_WEBUI_URL;
+  } catch (error) {
+    logger.warn('[stable-diffusion] Could not read the server URL for the model list', error);
+  }
+  return buildStableDiffusionToolContext({
+    url,
+    isUserProvidedEndpoint: getUserProvidedAuthFields(authFields).has('SD_WEBUI_URL'),
+    imageFiles,
+    appConfig: req?.config,
+  });
+};
 
 /**
  *
@@ -268,10 +302,10 @@ const loadTools = async ({
   /** @type {Record<string, string>} */
   const dynamicToolContextMap = {};
   if (tools.includes('stable-diffusion')) {
-    const toolContext = buildImageToolContext({
+    const toolContext = await loadStableDiffusionToolContext({
+      userId: user,
+      req: options.req,
       imageFiles: toolOptions['stable-diffusion'].imageFiles,
-      toolName: 'stable-diffusion',
-      contextDescription: 'image-to-image (img2img)',
     });
     if (toolContext) {
       dynamicToolContextMap['stable-diffusion'] = toolContext;
@@ -687,4 +721,5 @@ const loadTools = async ({
 module.exports = {
   loadToolWithAuth,
   loadTools,
+  loadStableDiffusionToolContext,
 };

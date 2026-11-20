@@ -138,7 +138,7 @@ const {
 const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSessionRefresh');
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { recordUsage } = require('~/server/services/Threads');
-const { loadTools } = require('~/app/clients/tools/util');
+const { loadTools, loadStableDiffusionToolContext } = require('~/app/clients/tools/util');
 const {
   findPluginAuthsByKeys,
   getRoleByName,
@@ -1592,16 +1592,16 @@ async function loadToolDefinitionsWrapper({
         dynamicToolContextMap.gemini_image_gen = toolContext;
       }
     }
+  }
 
-    if (filteredTools.includes('stable-diffusion')) {
-      const toolContext = buildImageToolContext({
-        imageFiles,
-        toolName: 'stable-diffusion',
-        contextDescription: 'image-to-image (img2img)',
-      });
-      if (toolContext) {
-        dynamicToolContextMap['stable-diffusion'] = toolContext;
-      }
+  if (filteredTools.includes('stable-diffusion')) {
+    const toolContext = await loadStableDiffusionToolContext({
+      userId: req.user.id,
+      req,
+      imageFiles,
+    });
+    if (toolContext) {
+      dynamicToolContextMap['stable-diffusion'] = toolContext;
     }
   }
 

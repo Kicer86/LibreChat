@@ -30,9 +30,13 @@ jest.mock('~/server/services/Files/Code/process', () => ({
   primeFiles: (...args) => mockPrimeCodeFiles(...args),
 }));
 
+const mockBuildStableDiffusionToolContext = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').buildStableDiffusionToolContext(...args),
+);
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   loadWebSearchAuth: (...args) => mockLoadWebSearchAuth(...args),
+  buildStableDiffusionToolContext: (...args) => mockBuildStableDiffusionToolContext(...args),
 }));
 
 jest.mock('~/server/services/PluginService', () => mockPluginService);
@@ -352,6 +356,25 @@ describe('Tool Handlers', () => {
       expect(typeof sdTool.getStrategyFunctions).toBe('function');
       expect(typeof sdTool.generatedImages?.find).toBe('function');
       expect(dynamicToolContextMap['stable-diffusion']).toContain('img-1');
+      delete process.env.SD_WEBUI_URL;
+    });
+
+    it('lists the stable-diffusion models of the configured server', async () => {
+      process.env.SD_WEBUI_URL = 'http://sd.local:7860';
+      mockBuildStableDiffusionToolContext.mockResolvedValueOnce('Image models available');
+      const { dynamicToolContextMap } = await loadTools({
+        user: fakeUser._id,
+        tools: ['stable-diffusion'],
+        options: { req: { config: { stableDiffusion: { models: { exclude: ['big'] } } } } },
+        useSpecs: true,
+      });
+      expect(mockBuildStableDiffusionToolContext).toHaveBeenCalledWith({
+        url: 'http://sd.local:7860',
+        isUserProvidedEndpoint: false,
+        imageFiles: [],
+        appConfig: { stableDiffusion: { models: { exclude: ['big'] } } },
+      });
+      expect(dynamicToolContextMap['stable-diffusion']).toBe('Image models available');
       delete process.env.SD_WEBUI_URL;
     });
 

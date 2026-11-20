@@ -1,5 +1,6 @@
-const { loadTools } = require('./handleTools');
+const { loadTools, loadStableDiffusionToolContext } = require('./handleTools');
 
 module.exports = {
   loadTools,
+  loadStableDiffusionToolContext,
 };

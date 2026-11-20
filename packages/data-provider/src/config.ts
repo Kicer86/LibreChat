@@ -3089,8 +3089,10 @@ export const outboundTimeoutsSchema = z.object({
   toolsMs: outboundTimeoutMs,
   /** Each text-to-speech or speech-to-text provider request. */
   speechMs: outboundTimeoutMs,
-  /** Each Stable Diffusion image generation request. */
+  /** Each Stable Diffusion image generation request, and each model load it needs first. */
   imageGenerationMs: outboundTimeoutMs,
+  /** Reading the image generation server's model list when a chat turn starts. */
+  imageModelsMs: outboundTimeoutMs,
 });
 
 /** Which stable-diffusion.cpp models (server recipe IDs) the `stable-diffusion` tool may use. */
