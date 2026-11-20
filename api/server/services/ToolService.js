@@ -1592,6 +1592,17 @@ async function loadToolDefinitionsWrapper({
         dynamicToolContextMap.gemini_image_gen = toolContext;
       }
     }
+
+    if (filteredTools.includes('stable-diffusion')) {
+      const toolContext = buildImageToolContext({
+        imageFiles,
+        toolName: 'stable-diffusion',
+        contextDescription: 'image-to-image (img2img)',
+      });
+      if (toolContext) {
+        dynamicToolContextMap['stable-diffusion'] = toolContext;
+      }
+    }
   }
 
   approvalMetadata.attach(toolDefinitions);

@@ -336,6 +336,24 @@ describe('Tool Handlers', () => {
       delete process.env.SD_WEBUI_URL;
     });
 
+    it('gives stable-diffusion the attached images and lists their IDs for the model', async () => {
+      process.env.SD_WEBUI_URL = mockCredential;
+      const attached = { file_id: 'img-1', type: 'image/png', width: 64, height: 64 };
+      const { loadedTools, dynamicToolContextMap } = await loadTools({
+        user: fakeUser._id,
+        tools: ['stable-diffusion'],
+        options: { tool_resources: { image_edit: { files: [attached] } } },
+        useSpecs: true,
+      });
+      const [sdTool] = loadedTools;
+      expect(sdTool).toBeInstanceOf(StructuredSD);
+      expect(sdTool.imageFiles).toEqual([attached]);
+      expect(typeof sdTool.findImageFiles).toBe('function');
+      expect(typeof sdTool.getStrategyFunctions).toBe('function');
+      expect(dynamicToolContextMap['stable-diffusion']).toContain('img-1');
+      delete process.env.SD_WEBUI_URL;
+    });
+
     it('loads the ask_user_question tool when not returning a map', async () => {
       const { loadedTools } = await loadTools({
         user: fakeUser._id,

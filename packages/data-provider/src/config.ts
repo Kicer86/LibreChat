@@ -5591,6 +5591,7 @@ export const imageInputTools: ReadonlySet<string> = new Set([
   'image_gen_oai',
   'image_edit_oai',
   'gemini_image_gen',
+  'stable-diffusion',
 ]);
 
 /**

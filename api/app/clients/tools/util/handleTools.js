@@ -73,7 +73,14 @@ const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/pro
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools, checkCapability } = require('~/server/services/Config');
 const { getMCPServersRegistry } = require('~/config');
-const { getRoleByName, setMemory, deleteMemory, getFormattedMemories } = require('~/models');
+const {
+  getFiles,
+  setMemory,
+  deleteMemory,
+  getRoleByName,
+  getFormattedMemories,
+} = require('~/models');
+const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 
 /** @typedef {typeof import('@librechat/agents/langchain/tools').Tool} ToolConstructor */
 /** @typedef {import('@librechat/agents/langchain/tools').Tool} Tool */
@@ -134,6 +141,24 @@ const getAuthFields = (toolKey) => {
  * @param {AppConfig['imageOutputType']} [params.imageOutputType]
  * @returns {Promise<{ loadedTools: Tool[], toolContextMap: Object<string, any>, dynamicToolContextMap?: Object<string, any> } | Record<string,Tool>>}
  */
+/**
+ * The requesting user's own image files (with dimensions), for image tools given image IDs that
+ * are not attached to the current request, such as images generated earlier.
+ * @param {string} userId
+ * @param {string[]} fileIds
+ */
+const findImageFiles = (userId, fileIds) =>
+  getFiles(
+    {
+      user: userId,
+      file_id: { $in: fileIds },
+      height: { $exists: true },
+      width: { $exists: true },
+    },
+    {},
+    {},
+  );
+
 const loadTools = async ({
   user,
   agent,
@@ -240,7 +265,12 @@ const loadTools = async ({
     traversaal_search: timeoutOptions,
     tavily_search_results_json: timeoutOptions,
     flux: imageGenOptions,
-    'stable-diffusion': imageGenOptions,
+    'stable-diffusion': {
+      ...imageGenOptions,
+      imageFiles: options.tool_resources?.[EToolResources.image_edit]?.files ?? [],
+      findImageFiles,
+      getStrategyFunctions,
+    },
     gemini_image_gen: imageGenOptions,
   };
 
@@ -248,6 +278,16 @@ const loadTools = async ({
   const toolContextMap = {};
   /** @type {Record<string, string>} */
   const dynamicToolContextMap = {};
+  if (tools.includes('stable-diffusion')) {
+    const toolContext = buildImageToolContext({
+      imageFiles: toolOptions['stable-diffusion'].imageFiles,
+      toolName: 'stable-diffusion',
+      contextDescription: 'image-to-image (img2img)',
+    });
+    if (toolContext) {
+      dynamicToolContextMap['stable-diffusion'] = toolContext;
+    }
+  }
   /**
    * @type {import('@librechat/agents').CodeEnvFile[] | undefined}
    * Captured by the `execute_code` factory when files are primed. Surfaced
