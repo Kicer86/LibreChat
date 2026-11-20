@@ -187,7 +187,7 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
     negative_prompt: {
       type: 'string',
       description:
-        'Keywords we want to exclude from the final image, using at least 7 keywords to accurately describe the image, separated by comma',
+        'Optional keywords to exclude from the final image, separated by comma. Helps older Stable Diffusion models; newer models (e.g. Flux, Qwen Image) mostly ignore it.',
     },
     image_ids: {
       type: 'array',
@@ -203,7 +203,7 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
         'Only with image_ids: how much the image may change, from 0 (keep it) to 1 (ignore it). Low values (0.3-0.5) restyle it, high values (0.6-0.8) reimagine it. Omit for the default.',
     },
   },
-  required: ['prompt', 'negative_prompt'],
+  required: ['prompt'],
 };
 
 /** Azure AI Search tool JSON schema */

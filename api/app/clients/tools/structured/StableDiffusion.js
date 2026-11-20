@@ -55,7 +55,7 @@ class StableDiffusionAPI extends Tool {
     this.isUserProvidedEndpoint = fields.userProvidedAuthFields?.has('SD_WEBUI_URL') === true;
     this.description_for_model = `// Generate images and visuals using text.
 // Guidelines:
-// - ALWAYS use {{"prompt": "7+ detailed keywords", "negative_prompt": "7+ detailed keywords"}} structure for queries.
+// - ALWAYS use {{"prompt": "7+ detailed keywords", "negative_prompt": "7+ detailed keywords"}} structure for queries; "negative_prompt" is optional.
 // - ALWAYS include the markdown url in your final response to show the user: ![caption](${getBasePath()}/images/id.png)
 // - Visually describe the moods, details, structures, styles, and/or proportions of the image. Remember, the focus is on visual attributes.
 // - Craft your input by "showing" and not "telling" the imagery. Think in terms of what you'd want to see in a photograph or a painting.
