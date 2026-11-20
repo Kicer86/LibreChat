@@ -200,7 +200,7 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
       minimum: 0,
       maximum: 1,
       description:
-        'Only with image_ids: how much the image may change, from 0 (keep it) to 1 (ignore it). Low values (0.3-0.5) restyle it, high values (0.6-0.8) reimagine it. Omit for the default.',
+        'Only with image_ids: how much the image may change, from 0 (keep it) to 1 (ignore it). Up to about 0.75 the colors and shapes stay and only details change; changing a color or replacing an object needs about 0.85; about 0.95 keeps only the rough composition. Omit for the server default.',
     },
   },
   required: ['prompt'],
