@@ -3305,6 +3305,28 @@ describe('GitHub comparison configuration', () => {
   });
 });
 
+describe('Stable Diffusion configuration', () => {
+  it('leaves model choice unset by default', () => {
+    expect(configSchema.parse({ version: '1.0' }).stableDiffusion).toBeUndefined();
+  });
+  it('accepts included, excluded and default models', () => {
+    const stableDiffusion = {
+      models: { include: ['qwen', 'flux'], exclude: ['flux'], defaultImage: 'qwen' },
+    };
+    expect(configSchema.parse({ version: '1.0', stableDiffusion }).stableDiffusion).toEqual(
+      stableDiffusion,
+    );
+  });
+  it.each([
+    { models: { include: [''] } },
+    { models: { defaultImage: 1 } },
+    { models: { allow: ['qwen'] } },
+    { defaultModel: 'qwen' },
+  ])('rejects %j', (stableDiffusion) => {
+    expect(configSchema.safeParse({ version: '1.0', stableDiffusion }).success).toBe(false);
+  });
+});
+
 describe('agent recursion limits', () => {
   it.each(['recursionLimit', 'maxRecursionLimit'])(
     '%s takes a whole number of at least 1',

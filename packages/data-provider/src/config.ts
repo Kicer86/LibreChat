@@ -3093,6 +3093,25 @@ export const outboundTimeoutsSchema = z.object({
   imageGenerationMs: outboundTimeoutMs,
 });
 
+/** Which stable-diffusion.cpp models (server recipe IDs) the `stable-diffusion` tool may use. */
+export const stableDiffusionConfigSchema = z
+  .object({
+    models: z
+      .object({
+        /** The only models the tool may use; unset allows every model the server can load. */
+        include: z.array(z.string().min(1)).optional(),
+        /** Models the tool never uses, even when `include` lists them. */
+        exclude: z.array(z.string().min(1)).optional(),
+        /** Image model used when none is requested and the loaded one is excluded or makes video. */
+        defaultImage: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type TStableDiffusionConfig = z.infer<typeof stableDiffusionConfigSchema>;
+
 /** Retention for the write-only GENERAL violation log kept per user. */
 export const violationLogSchema = z.object({
   /** Newest entries kept per user; older ones are dropped on the next append. */
@@ -4939,6 +4958,7 @@ export const configSchema = z.object({
     })
     .strict()
     .optional(),
+  stableDiffusion: stableDiffusionConfigSchema.optional(),
   langfuse: langfuseConfigSchema.optional(),
   credentials: credentialsConfigSchema.optional(),
   memory: memorySchema.optional(),

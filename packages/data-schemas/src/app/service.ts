@@ -221,6 +221,7 @@ export const AppService = async (params?: {
     skillDeletion,
     webSearch,
     githubCompare: config.githubCompare,
+    stableDiffusion: config.stableDiffusion,
     timeouts: config.timeouts,
     spreadsheetParsing: config.spreadsheetParsing,
     violationLog: config.violationLog,

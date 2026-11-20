@@ -70,6 +70,8 @@ export interface AppConfig {
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
   githubCompare?: TCustomConfig['githubCompare'];
+  /** Models the `stable-diffusion` tool may use on a stable-diffusion.cpp server */
+  stableDiffusion?: TCustomConfig['stableDiffusion'];
   /** Outbound call budgets; unset keys fall back to the server defaults */
   timeouts?: TCustomConfig['timeouts'];
   /** Violation log retention; unset keeps the server default */

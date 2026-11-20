@@ -613,6 +613,14 @@ registration:
 #   speechMs: 300000 # each text-to-speech or speech-to-text provider request
 #   imageGenerationMs: 300000 # each Stable Diffusion image generation request
 
+# Models the stable-diffusion tool may use on a stable-diffusion.cpp server (SD_WEBUI_URL).
+# IDs are the server's recipe IDs (GET /sdcpp/v1/recipes). Other Stable Diffusion servers ignore this.
+# stableDiffusion:
+#   models:
+#     include: ['local-qwen-image-21-q8'] # default: every model the server can load
+#     exclude: ['local-ltx25-dev-q8'] # never used, even when included
+#     defaultImage: 'local-qwen-image-21-q8' # used when no model is requested and the loaded one is excluded or makes video
+
 # Newest violations kept per user in the general violation log.
 # violationLog:
 #   maxEntries: 100
