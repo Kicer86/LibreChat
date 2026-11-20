@@ -5,11 +5,12 @@ const sharp = require('sharp');
 const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
 const { Tool } = require('@librechat/agents/langchain/tools');
-const { FileContext, ContentTypes } = require('librechat-data-provider');
+const { FileContext } = require('librechat-data-provider');
 const {
   getBasePath,
   stableDiffusionSchema,
   generateStableDiffusionImage,
+  buildStableDiffusionAgentOutput,
 } = require('@librechat/api');
 const paths = require('~/config/paths');
 
@@ -127,6 +128,17 @@ class StableDiffusionAPI extends Tool {
       logger.error('[StableDiffusion] Error while generating image:', error);
       return this.returnValue('Error making API request.');
     }
+    if (this.isAgent) {
+      return buildStableDiffusionAgentOutput({
+        data: generation.data,
+        model: generation.model,
+        displayMessage,
+        createFileId: uuidv4,
+        req: this.req,
+        generatedImages: this.generatedImages,
+      });
+    }
+
     const image = generation.data.images[0];
 
     /** @type {{ height: number, width: number, seed: number, infotexts: string[] }} */
@@ -148,33 +160,6 @@ class StableDiffusionAPI extends Tool {
     }
 
     try {
-      if (this.isAgent) {
-        const content = [
-          {
-            type: ContentTypes.IMAGE_URL,
-            image_url: {
-              url: `data:image/png;base64,${image}`,
-            },
-          },
-        ];
-
-        /** The saved image keeps this ID, so the model can pass it back in image_ids (img2img). */
-        this.generatedImages?.remember(this.req, {
-          file: { file_id, width: info.width, height: info.height },
-          buffer: Buffer.from(image, 'base64'),
-          mimeType: 'image/png',
-        });
-        const response = [
-          {
-            type: ContentTypes.TEXT,
-            text: `${displayMessage}\n\ngenerated_image_id: "${file_id}"${
-              generation.model ? `\nmodel: "${generation.model}"` : ''
-            }`,
-          },
-        ];
-        return [response, { content, file_ids: [file_id] }];
-      }
-
       const buffer = Buffer.from(image.split(',', 1)[0], 'base64');
       if (this.returnMetadata && this.uploadImageBuffer && this.req) {
         const file = await this.uploadImageBuffer({

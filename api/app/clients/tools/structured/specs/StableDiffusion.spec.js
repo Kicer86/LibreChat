@@ -1,4 +1,5 @@
 const mockGenerateStableDiffusionImage = jest.fn();
+const mockBuildStableDiffusionAgentOutput = jest.fn();
 
 jest.mock('sharp', () => jest.fn(), { virtual: true });
 jest.mock('uuid', () => ({ v4: jest.fn(() => 'file-1') }), { virtual: true });
@@ -22,6 +23,7 @@ jest.mock(
 );
 jest.mock('@librechat/api', () => ({
   generateStableDiffusionImage: (...args) => mockGenerateStableDiffusionImage(...args),
+  buildStableDiffusionAgentOutput: (...args) => mockBuildStableDiffusionAgentOutput(...args),
   getBasePath: jest.fn(),
 }));
 jest.mock('~/config/paths', () => ({ imageOutput: '/tmp/sd-images', clientPath: '/tmp' }), {
@@ -89,27 +91,29 @@ describe('StableDiffusionAPI', () => {
     expect(result).toBe('Error making API request.');
   });
 
-  it('names the generated image and the model that made it to the agent', async () => {
-    mockGenerateStableDiffusionImage.mockResolvedValue({
-      data: { images: ['aW1hZ2U='], info: JSON.stringify({ width: 512, height: 512 }) },
-      model: 'local-qwen-image-21-q8',
-    });
+  it('hands the generation to the agent output with its model and the image registry', async () => {
+    const data = { images: ['aW1hZ2U='], info: JSON.stringify({ width: 512, height: 512 }) };
+    mockGenerateStableDiffusionImage.mockResolvedValue({ data, model: 'local-qwen-image-21-q8' });
+    const output = [[{ type: 'text', text: 'shown' }], { content: [], file_ids: ['file-1'] }];
+    mockBuildStableDiffusionAgentOutput.mockReturnValue(output);
     const generatedImages = { remember: jest.fn() };
+    const req = { user: { id: 'user-1' } };
     const tool = new StableDiffusionAPI({
       SD_WEBUI_URL: 'http://sd.local',
       userId: 'user-1',
       isAgent: true,
+      req,
       generatedImages,
     });
 
-    const [response, artifact] = await tool._call({ prompt: 'p' });
-
-    expect(response[0].text).toContain('generated_image_id: "file-1"');
-    expect(response[0].text).toContain('model: "local-qwen-image-21-q8"');
-    expect(artifact).toMatchObject({ file_ids: ['file-1'] });
-    expect(generatedImages.remember).toHaveBeenCalledWith(
-      undefined,
-      expect.objectContaining({ file: { file_id: 'file-1', width: 512, height: 512 } }),
-    );
+    await expect(tool._call({ prompt: 'p' })).resolves.toBe(output);
+    expect(mockBuildStableDiffusionAgentOutput).toHaveBeenCalledWith({
+      data,
+      model: 'local-qwen-image-21-q8',
+      displayMessage: expect.stringContaining('Stable Diffusion displayed an image'),
+      createFileId: expect.any(Function),
+      req,
+      generatedImages,
+    });
   });
 });

@@ -7,4 +7,5 @@ export * from './oai';
 export * from './sdcpp';
 export * from './stableDiffusion';
 export * from './stableDiffusionParams';
+export * from './stableDiffusionResult';
 export * from './web';

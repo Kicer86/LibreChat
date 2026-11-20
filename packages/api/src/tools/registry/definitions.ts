@@ -233,7 +233,7 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
       type: 'integer',
       minimum: -1,
       description:
-        'Seed for the random noise. The same seed, prompt and settings give the same image again. Omit, or pass -1, for a random one.',
+        'Seed for the random noise. The same seed, prompt and settings give the same image again; the result states the seed of each image. Omit, or pass -1, for a random one.',
     },
     sampler: {
       type: 'string',
