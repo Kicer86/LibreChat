@@ -205,7 +205,30 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
     model: {
       type: 'string',
       description:
-        'ID of the model to generate with, when the tool context lists the available models. Omit to keep the loaded model; loading another one takes extra time.',
+        'ID of the model to generate with, when the tool context lists the available models. Omit to keep the loaded model; loading another one takes extra time. A video model makes a video clip.',
+    },
+    video: {
+      type: 'boolean',
+      description:
+        'Set to true to make a short video clip instead of an image, when the tool context lists video models. A clip takes minutes; one call makes one clip.',
+    },
+    frames: {
+      type: 'integer',
+      minimum: 1,
+      description:
+        'Only for video: the clip\'s length in frames, rounded to the frame counts the model takes. Omit for the model\'s default length, or give "duration" instead.',
+    },
+    duration: {
+      type: 'number',
+      minimum: 0,
+      description:
+        'Only for video: the clip\'s length in seconds, instead of "frames". Omit for the model\'s default length.',
+    },
+    fps: {
+      type: 'integer',
+      minimum: 1,
+      description:
+        "Only for video: frames per second. Omit for the model's default; some models play at a fixed rate.",
     },
     width: {
       type: 'integer',

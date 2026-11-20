@@ -14,10 +14,12 @@ import type {
 import type {
   SdcppCatalogLookup,
   SdcppCapabilities,
+  SdcppClipRequest,
   SdcppModelStatus,
   SdcppModelCheck,
   SdcppProbe,
   SdcppModel,
+  SdcppVideo,
   SdcppPost,
 } from './sdcpp';
 import type { GeneratedImageRegistry, ImageInput, LoadImageInputsParams } from './images';
@@ -39,6 +41,9 @@ import {
   verifySdcppModel,
   parseSdcppCapabilities,
   parseSdcppDefaults,
+  resolveSdcppClip,
+  runSdcppVideoJob,
+  buildSdcppVideoBody,
 } from './sdcpp';
 import {
   IMAGE_SIZE,
@@ -241,6 +246,8 @@ export interface StableDiffusionImageInput {
   denoising_strength?: number;
   /** stable-diffusion.cpp model (recipe ID) to generate with; omitted, the loaded one is kept. */
   model?: string;
+  /** Make a video clip instead of an image; left out, a requested video model makes one too. */
+  video?: boolean;
 }
 
 export type StableDiffusionToolInput = StableDiffusionImageInput & StableDiffusionParamsInput;
@@ -265,6 +272,10 @@ export interface StableDiffusionToolContext {
    * process is used.
    */
   lock?: DistributedLock;
+  /** Fires when the user stops the response; a running video job is then cancelled. */
+  signal?: AbortSignal;
+  /** Whether the caller can show a video clip (agents can; the legacy plugin flow cannot). */
+  allowVideo?: boolean;
 }
 
 export type PreparedStableDiffusionRequest =
@@ -286,8 +297,15 @@ export type PreparedStableDiffusionRequest =
        * they depend on the model that renders it.
        */
       settings: StableDiffusionSettingsRequest;
-      /** The checked settings; on stable-diffusion.cpp the recipe fills in the sampling ones left out. */
+      /**
+       * The checked settings: a video's request, which is not a WebUI payload, is built from them,
+       * and on stable-diffusion.cpp the recipe fills in the sampling ones left out.
+       */
       params: StableDiffusionParams;
+      /** The clip length and frame rate asked for, for a video. */
+      clip: SdcppClipRequest;
+      /** Most frames a clip may have (`librechat.yaml`). */
+      maxFrames: number;
     };
 
 /** Axios config for a request to `requestUrl`, SSRF-guarded when the user set the URL. */
@@ -384,7 +402,17 @@ export async function prepareStableDiffusionRequest(
   });
   const url = `${context.url}${path}`;
   const config = stableDiffusionRequestConfig(context, url, {});
-  return { url, payload, config, backend, settings, params: check.value, ...(image && { image }) };
+  return {
+    url,
+    payload,
+    config,
+    backend,
+    settings,
+    params: check.value,
+    clip: check.clip,
+    maxFrames: check.maxFrames,
+    ...(image && { image }),
+  };
 }
 
 /**
@@ -412,6 +440,11 @@ export type StableDiffusionGeneration =
       data: StableDiffusionResponse;
       /** The stable-diffusion.cpp model (recipe ID) that generated the image, when known. */
       model?: string;
+    }
+  | {
+      video: SdcppVideo;
+      /** The stable-diffusion.cpp model (recipe ID) that generated the clip, when known. */
+      model?: string;
     };
 
 /** Shown to the model when it names a model on a server that has no model list. */
@@ -426,6 +459,27 @@ export const stableDiffusionModelFailed = (model: string) =>
 /** Shown to the model when other requests kept the image server busy for the whole budget. */
 export const STABLE_DIFFUSION_SERVER_BUSY =
   'The image server is busy with other images. Try again later.';
+/** Shown to the model when it asks a server without video models, or the plugin flow, for a clip. */
+export const STABLE_DIFFUSION_VIDEO_UNSUPPORTED =
+  'This image server cannot make video clips here. Omit "video", "frames", "duration" and "fps".';
+/** Shown to the model when it asks for a clip from an image, which this tool does not do yet. */
+export const STABLE_DIFFUSION_VIDEO_FROM_IMAGE =
+  'A video clip cannot start from an image yet. Omit "image_ids" to make a clip from the prompt.';
+/** Shown to the model when it asks for several clips in one call. */
+export const STABLE_DIFFUSION_VIDEO_COUNT = 'One call makes one video clip. Omit "count".';
+/** Shown to the model when it passes clip settings for an image. */
+export const STABLE_DIFFUSION_CLIP_WITHOUT_VIDEO =
+  '"frames", "duration" and "fps" are for video clips. Set "video": true, or omit them for an image.';
+/** Shown to the model when the server refused the video request. */
+export const STABLE_DIFFUSION_VIDEO_REJECTED =
+  'The video server refused the request. Try other settings or another video model.';
+/** Shown to the model when sd-server reports the video job failed. */
+export const STABLE_DIFFUSION_VIDEO_FAILED = 'The video generation failed. Try again later.';
+/** Shown to the model when the video job was cancelled on the server. */
+export const STABLE_DIFFUSION_VIDEO_CANCELLED = 'The video generation was cancelled.';
+/** Shown to the model when the video job outlasted `videoGenerationMs` and was cancelled. */
+export const stableDiffusionVideoTimeout = (budgetMs: number) =>
+  `The video clip was not ready within ${Math.round(budgetMs / 1000)} seconds and was cancelled. Try a shorter or smaller clip, or fewer steps.`;
 /** Shown to the model when the generation stopped because its hold on the server was lost. */
 export const STABLE_DIFFUSION_LOCK_LOST =
   'The image generation was stopped because another request may be using the image server. Try again.';
@@ -512,6 +566,10 @@ export async function generateStableDiffusionImage(
   input: StableDiffusionToolInput,
   context: StableDiffusionToolContext,
 ): Promise<StableDiffusionGeneration> {
+  const clipAsked = input.frames != null || input.duration != null || input.fps != null;
+  if (input.video === true && input.image_ids?.length) {
+    return { error: STABLE_DIFFUSION_VIDEO_FROM_IMAGE };
+  }
   const request = await prepareStableDiffusionRequest(input, context);
   if ('error' in request) {
     return request;
@@ -534,7 +592,10 @@ export async function generateStableDiffusionImage(
   const payloadFor = async (
     model: SdcppModel | undefined,
     signal: AbortSignal,
-  ): Promise<{ payload: Record<string, unknown> } | { error: string }> => {
+  ): Promise<
+    | { payload: Record<string, unknown>; settings: StableDiffusionSettings & SdcppRecipeSampling }
+    | { error: string }
+  > => {
     let defaults: StableDiffusionDefaults = {
       ...(model?.width && { width: model.width }),
       ...(model?.height && { height: model.height }),
@@ -554,10 +615,16 @@ export async function generateStableDiffusionImage(
     }
     signal.throwIfAborted();
     const sampling = sdcppRecipeSampling(model, request.params);
-    return { payload: { ...request.payload, ...result.value, ...sampling } };
+    return {
+      payload: { ...request.payload, ...result.value, ...sampling },
+      settings: { ...result.value, ...sampling },
+    };
   };
 
   if (request.backend === 'webui') {
+    if (input.video === true || clipAsked) {
+      return { error: STABLE_DIFFUSION_VIDEO_UNSUPPORTED };
+    }
     if (input.model) {
       return { error: STABLE_DIFFUSION_MODEL_UNSUPPORTED };
     }
@@ -569,16 +636,42 @@ export async function generateStableDiffusionImage(
     request.backend === 'sdcpp'
       ? await getSdcppCatalog(context.url, sdcppClient(context).probe)
       : { status: 'unavailable' };
+  const requestedModel =
+    lookup.status === 'listed' && input.model
+      ? lookup.catalog.models.find((candidate) => candidate.id === input.model)
+      : undefined;
+  /** A clip is asked for outright, or by naming a video model without saying otherwise. */
+  const video = input.video ?? requestedModel?.mode === 'video';
+  if (video) {
+    if (!context.allowVideo || lookup.status === 'unsupported') {
+      return { error: STABLE_DIFFUSION_VIDEO_UNSUPPORTED };
+    }
+    if (lookup.status === 'unavailable') {
+      return { error: STABLE_DIFFUSION_MODELS_UNAVAILABLE };
+    }
+    if (request.image) {
+      return { error: STABLE_DIFFUSION_VIDEO_FROM_IMAGE };
+    }
+    if (input.count != null && input.count > 1) {
+      return { error: STABLE_DIFFUSION_VIDEO_COUNT };
+    }
+  } else if (clipAsked) {
+    return { error: STABLE_DIFFUSION_CLIP_WITHOUT_VIDEO };
+  }
+  const budgetKey = video ? 'videoGenerationMs' : 'imageGenerationMs';
   const lockParams = {
     lock: context.lock ?? processLock,
     url: context.url,
-    waitMs: getOutboundTimeoutMs(appConfig, 'imageGenerationMs'),
+    waitMs: getOutboundTimeoutMs(appConfig, budgetKey),
   };
   /** A server not identified yet gets the WebUI request prepared for it, already within the limits. */
   const unlistedPayload = (signal: AbortSignal) =>
     request.backend === 'sdcpp'
       ? payloadFor(undefined, signal)
       : Promise.resolve({ payload: request.payload });
+  /** The task's signal also fires when the user stops the response. */
+  const taskSignal = (lockSignal: AbortSignal) =>
+    context.signal ? AbortSignal.any([lockSignal, context.signal]) : lockSignal;
   /**
    * Without a catalog no model can be chosen or loaded. The loaded one is used as it is, but when
    * `librechat.yaml` restricts models only after the server confirms it is a ready, allowed one,
@@ -625,6 +718,72 @@ export async function generateStableDiffusionImage(
   };
 
   type Attempt = StableDiffusionGeneration | { switchedAway: string };
+  /**
+   * Makes a clip with the loaded video `model`: frames fitted to its rule, size and steps to the
+   * limits, then a job that runs within `videoGenerationMs` and is cancelled when it outlasts it
+   * or the response is stopped.
+   */
+  const generateVideo = async (
+    model: SdcppModel,
+    status: SdcppModelStatus,
+    signal: AbortSignal,
+  ): Promise<Attempt> => {
+    const clip = resolveSdcppClip(request.clip, model, request.maxFrames);
+    if (!clip.ok) {
+      return { error: clip.error.message };
+    }
+    const sized = await payloadFor(model, signal);
+    if ('error' in sized) {
+      return sized;
+    }
+    const budgetMs = getOutboundTimeoutMs(appConfig, 'videoGenerationMs');
+    const job = await runSdcppVideoJob({
+      url: context.url,
+      body: buildSdcppVideoBody(
+        {
+          prompt: input.prompt,
+          negative_prompt: input.negative_prompt,
+          ...request.params,
+          ...sized.settings,
+        },
+        clip.value,
+      ),
+      client: sdcppClient(context, signal),
+      cleanup: sdcppClient(context),
+      signal,
+      budgetMs,
+    });
+    if (job.status === 'rejected') {
+      logger.warn(`[StableDiffusion] ${model.id} refused a video request (HTTP ${job.httpStatus})`);
+      return { error: STABLE_DIFFUSION_VIDEO_REJECTED };
+    }
+    if (job.status === 'failed') {
+      logger.warn(`[StableDiffusion] A video job on ${model.id} ended with ${job.code}`);
+      return {
+        error:
+          job.code === 'cancelled'
+            ? STABLE_DIFFUSION_VIDEO_CANCELLED
+            : STABLE_DIFFUSION_VIDEO_FAILED,
+      };
+    }
+    if (job.status === 'timeout') {
+      return { error: stableDiffusionVideoTimeout(budgetMs) };
+    }
+    const check = verifySdcppModel(status, { generation_info: job.video.info });
+    if (check.result === 'mismatch') {
+      logger.warn(
+        `[StableDiffusion] The model changed while ${model.id} generated (${check.detail})`,
+      );
+      return { switchedAway: model.id };
+    }
+    if (check.result === 'match') {
+      return { video: job.video, model: model.id };
+    }
+    logger.warn(
+      `[StableDiffusion] Could not tell which model generated the clip (${model.id} expected)`,
+    );
+    return { video: job.video };
+  };
   /** One choose, load and generate pass; every request ends when the server lock is lost. */
   const attempt = async (
     models: SdcppModel[],
@@ -639,7 +798,7 @@ export async function generateStableDiffusionImage(
       config: modelsConfig,
       requested,
       withImage: request.image != null,
-      video: false,
+      video,
       readyOutsideCatalog: !status.recipe && hasReadySdcppModel(status),
     });
     if (!choice.ok) {
@@ -669,6 +828,9 @@ export async function generateStableDiffusionImage(
     noteSdcppModelLoaded(context.url, status.recipe);
 
     signal.throwIfAborted();
+    if (choice.model.mode === 'video') {
+      return generateVideo(choice.model, status, signal);
+    }
     const sized = await payloadFor(choice.model, signal);
     if ('error' in sized) {
       return sized;
@@ -683,7 +845,8 @@ export async function generateStableDiffusionImage(
   };
 
   try {
-    return await withSdcppServerLock(lockParams, async (signal) => {
+    return await withSdcppServerLock(lockParams, async (lockSignal) => {
+      const signal = taskSignal(lockSignal);
       if (lookup.status !== 'listed') {
         return generateUnlisted(lookup.status, signal);
       }

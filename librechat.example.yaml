@@ -613,6 +613,7 @@ registration:
 #   speechMs: 300000 # each text-to-speech or speech-to-text provider request
 #   imageGenerationMs: 300000 # each Stable Diffusion image generation request, and each model load it needs
 #   imageModelsMs: 5000 # reading the Stable Diffusion server's model list when a chat turn starts
+#   videoGenerationMs: 1200000 # each Stable Diffusion video clip, from sending the job until it is ready; a job still running is cancelled
 
 # Models the stable-diffusion tool may use on a stable-diffusion.cpp server (SD_WEBUI_URL).
 # IDs are the server's recipe IDs (GET /sdcpp/v1/recipes). Other Stable Diffusion servers ignore `models`.

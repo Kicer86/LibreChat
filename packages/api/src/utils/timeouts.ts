@@ -13,6 +13,7 @@ export const DEFAULT_OUTBOUND_TIMEOUTS_MS = {
   speechMs: 300_000,
   imageGenerationMs: 300_000,
   imageModelsMs: 5_000,
+  videoGenerationMs: 1_200_000,
 } as const;
 
 /**

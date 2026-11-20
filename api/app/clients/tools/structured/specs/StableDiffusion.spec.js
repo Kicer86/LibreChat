@@ -51,8 +51,9 @@ describe('StableDiffusionAPI', () => {
       lock,
     });
     const input = { prompt: 'test prompt', image_ids: ['img-1'] };
+    const { signal } = new AbortController();
 
-    await tool._call(input);
+    await tool._call(input, undefined, { signal });
 
     expect(mockGenerateStableDiffusionImage).toHaveBeenCalledWith(
       input,
@@ -62,6 +63,8 @@ describe('StableDiffusionAPI', () => {
         imageFiles,
         findImageFiles,
         lock,
+        signal,
+        allowVideo: false,
       }),
     );
   });
@@ -107,8 +110,12 @@ describe('StableDiffusionAPI', () => {
     });
 
     await expect(tool._call({ prompt: 'p' })).resolves.toBe(output);
+    expect(mockGenerateStableDiffusionImage).toHaveBeenCalledWith(
+      { prompt: 'p' },
+      expect.objectContaining({ allowVideo: true }),
+    );
     expect(mockBuildStableDiffusionAgentOutput).toHaveBeenCalledWith({
-      data,
+      generation: { data, model: 'local-qwen-image-21-q8' },
       model: 'local-qwen-image-21-q8',
       displayMessage: expect.stringContaining('Stable Diffusion displayed an image'),
       createFileId: expect.any(Function),

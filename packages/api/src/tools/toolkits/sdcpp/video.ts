@@ -204,3 +204,46 @@ export async function runSdcppVideoJob({
     throw error;
   }
 }
+
+/** What `buildSdcppVideoBody` reads from a WebUI-style generation payload. */
+export interface SdcppVideoSettings {
+  prompt: string;
+  negative_prompt?: string;
+  width?: number;
+  height?: number;
+  steps?: number;
+  cfg_scale?: number;
+  seed?: number;
+  sampler_name?: string;
+  scheduler?: string;
+}
+
+/**
+ * The `vid_gen` body for a clip: the prompt, size and seed as top-level fields, the sampling
+ * settings nested the way sd-server's native schema takes them (flat `steps` or `cfg_scale` are
+ * ignored), and an animated WebP as the output, which browsers play in an `<img>`. Settings left
+ * out keep the loaded recipe's defaults.
+ */
+export function buildSdcppVideoBody(
+  settings: SdcppVideoSettings,
+  clip: { frames: number; fps?: number },
+): Record<string, unknown> {
+  const { prompt, negative_prompt, width, height, steps, cfg_scale, seed } = settings;
+  const sampleParams: Record<string, unknown> = {
+    ...(steps != null && { sample_steps: steps }),
+    ...(settings.sampler_name && { sample_method: settings.sampler_name }),
+    ...(settings.scheduler && { scheduler: settings.scheduler }),
+    ...(cfg_scale != null && { guidance: { txt_cfg: cfg_scale } }),
+  };
+  return {
+    prompt,
+    ...(negative_prompt && { negative_prompt }),
+    ...(width != null && { width }),
+    ...(height != null && { height }),
+    video_frames: clip.frames,
+    ...(clip.fps != null && { fps: clip.fps }),
+    ...(seed != null && { seed }),
+    output_format: 'webp',
+    ...(Object.keys(sampleParams).length > 0 && { sample_params: sampleParams }),
+  };
+}

@@ -50,6 +50,8 @@ describe('prepareStableDiffusionRequest', () => {
         },
       },
       params: {},
+      clip: {},
+      maxFrames: 121,
     });
     expect(applySSRFSafeAgentIfDirect).not.toHaveBeenCalled();
   });

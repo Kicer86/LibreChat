@@ -3093,6 +3093,8 @@ export const outboundTimeoutsSchema = z.object({
   imageGenerationMs: outboundTimeoutMs,
   /** Reading the image generation server's model list when a chat turn starts. */
   imageModelsMs: outboundTimeoutMs,
+  /** Each Stable Diffusion video clip, from sending the job until the clip is ready. */
+  videoGenerationMs: outboundTimeoutMs,
 });
 
 /** Which stable-diffusion.cpp models (server recipe IDs) the `stable-diffusion` tool may use. */

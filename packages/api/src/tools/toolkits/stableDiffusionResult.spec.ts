@@ -1,8 +1,10 @@
 import type { ServerRequest } from '~/types';
 import {
+  readSdcppVideoSettings,
   readStableDiffusionSettings,
   formatStableDiffusionSettings,
   buildStableDiffusionAgentOutput,
+  STABLE_DIFFUSION_VIDEO_DISPLAYED,
 } from './stableDiffusionResult';
 import { createGeneratedImageRegistry } from './images';
 
@@ -88,7 +90,7 @@ describe('buildStableDiffusionAgentOutput', () => {
     const generatedImages = createGeneratedImageRegistry();
     let next = 0;
     const [response, artifact] = buildStableDiffusionAgentOutput({
-      data: { images: ['Zmlyc3Q=', 'c2Vjb25k'], info: sdcppInfo },
+      generation: { data: { images: ['Zmlyc3Q=', 'c2Vjb25k'], info: sdcppInfo } },
       model: 'qwen',
       displayMessage: 'Shown.',
       createFileId: () => `file-${++next}`,
@@ -125,10 +127,86 @@ describe('buildStableDiffusionAgentOutput', () => {
 
   it('names the image alone when the server reports no settings', () => {
     const [response] = buildStableDiffusionAgentOutput({
-      data: { images: ['aW1hZ2U='] },
+      generation: { data: { images: ['aW1hZ2U='] } },
       displayMessage: 'Shown.',
       createFileId: () => 'file-1',
     });
     expect(response[0].text).toBe('Shown.\n\ngenerated_image_id: "file-1"');
+  });
+
+  it('returns a clip as one animated image with its generated_video_id and settings', () => {
+    const generatedImages = createGeneratedImageRegistry();
+    const [response, artifact] = buildStableDiffusionAgentOutput({
+      generation: { video },
+      model: 'ltx',
+      displayMessage: 'Shown.',
+      createFileId: () => 'clip-1',
+      req,
+      generatedImages,
+    });
+    expect(response[0].text).toBe(
+      [
+        STABLE_DIFFUSION_VIDEO_DISPLAYED,
+        '',
+        'generated_video_id: "clip-1" (seed: 7)',
+        'model: "ltx"',
+        'settings: width: 512, height: 320, frames: 9, fps: 24, steps: 8, cfg_scale: 1, sampler: euler, scheduler: ltx2',
+      ].join('\n'),
+    );
+    expect(artifact).toEqual({
+      content: [{ type: 'image_url', image_url: { url: 'data:image/webp;base64,UklGRg==' } }],
+      file_ids: ['clip-1'],
+    });
+    expect(generatedImages.find(req, 'clip-1')).toEqual({
+      file: { file_id: 'clip-1', width: 512, height: 320 },
+      buffer: Buffer.from('UklGRg==', 'base64'),
+      mimeType: 'image/webp',
+    });
+  });
+});
+
+/** Trimmed from a live stable-diffusion.cpp video job (`result`, LTX 2.5 distilled). */
+const video = {
+  base64: 'UklGRg==',
+  mimeType: 'image/webp',
+  fps: 24,
+  frames: 9,
+  info: {
+    fps: 24,
+    height: 320,
+    kind: 'video',
+    sample_params: {
+      guidance: { distilled_guidance: 3.5, txt_cfg: 1.0 },
+      sample_method: 'euler',
+      sample_steps: 8,
+      scheduler: 'ltx2',
+    },
+    seed: '7',
+    video_frames: 9,
+    width: 512,
+  },
+};
+
+describe('readSdcppVideoSettings', () => {
+  it("reads the clip's size, frames, seed and sampling settings", () => {
+    expect(readSdcppVideoSettings(video)).toEqual({
+      seeds: [7],
+      width: 512,
+      height: 320,
+      frames: 9,
+      fps: 24,
+      steps: 8,
+      cfg_scale: 1,
+      sampler: 'euler',
+      scheduler: 'ltx2',
+    });
+  });
+
+  it('falls back to the job result for the frames and frame rate', () => {
+    expect(readSdcppVideoSettings({ ...video, info: {} })).toEqual({
+      seeds: [],
+      frames: 9,
+      fps: 24,
+    });
   });
 });

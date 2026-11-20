@@ -2,6 +2,12 @@ import axios from 'axios';
 import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import {
+  STABLE_DIFFUSION_VIDEO_COUNT,
+  STABLE_DIFFUSION_VIDEO_FAILED,
+  stableDiffusionVideoTimeout,
+  STABLE_DIFFUSION_VIDEO_FROM_IMAGE,
+  STABLE_DIFFUSION_VIDEO_UNSUPPORTED,
+  STABLE_DIFFUSION_CLIP_WITHOUT_VIDEO,
   STABLE_DIFFUSION_LOCK_LOST,
   generateStableDiffusionImage,
   STABLE_DIFFUSION_SERVER_BUSY,
@@ -31,7 +37,10 @@ const recipe = (id: string, file: string, extra: Record<string, unknown> = {}) =
 const recipes = [
   recipe('qwen', 'qwen.gguf'),
   recipe('flux', 'flux.gguf', { defaults: { width: 768, height: 768, steps: 20 } }),
-  recipe('ltx', 'ltx.gguf', { defaults: { video_frames: 33 } }),
+  recipe('ltx', 'ltx.gguf', {
+    defaults: { width: 768, height: 512, steps: 8, video_frames: 121, fps: 24 },
+    video_constraints: { frame_offset: 1, frame_step: 8, frame_rounding: 'floor', min_frames: 1 },
+  }),
   recipe('sdxl', 'sdxl.gguf', {
     defaults: {
       width: 1024,
@@ -73,11 +82,42 @@ async function after<T>(ms: number, config: { signal?: AbortSignal } | undefined
 function serve(
   initial: { id: string; file: string; error?: string },
   generatedFiles?: string[],
-  delays: { loadMs?: number; generateMs?: number; recipesStatus?: number } = {},
+  delays: {
+    loadMs?: number;
+    generateMs?: number;
+    recipesStatus?: number;
+    /** What the video job reports on each poll; the last one repeats. */
+    jobStates?: string[];
+  } = {},
 ) {
   let loaded = initial;
   const files = [...(generatedFiles ?? [])];
-  mockGet.mockImplementation(async (requestUrl: string) => {
+  const jobStates = [...(delays.jobStates ?? ['completed'])];
+  let cancelled = false;
+  mockGet.mockImplementation(async (requestUrl: string, config?: { signal?: AbortSignal }) => {
+    if (requestUrl.endsWith('/sdcpp/v1/jobs/job_1')) {
+      const next = jobStates.length > 1 ? jobStates.shift() : jobStates[0];
+      const state = cancelled ? 'cancelled' : next;
+      const result =
+        state === 'completed'
+          ? {
+              b64_json: 'UklGRg==',
+              mime_type: 'image/webp',
+              fps: 24,
+              frame_count: 9,
+              generation_info: {
+                kind: 'video',
+                seed: '7',
+                width: 512,
+                height: 320,
+                video_frames: 9,
+                fps: 24,
+                models: { diffusion_model: loaded.file },
+              },
+            }
+          : null;
+      return after(0, config, { status: 200, data: { id: 'job_1', status: state, result } });
+    }
     if (requestUrl.endsWith('/sdcpp/v1/capabilities')) {
       return {
         status: 200,
@@ -106,6 +146,13 @@ function serve(
   });
   mockPost.mockImplementation(
     async (requestUrl: string, body: { recipe?: string }, config?: { signal?: AbortSignal }) => {
+      if (requestUrl.endsWith('/sdcpp/v1/vid_gen')) {
+        return after(0, config, { status: 202, data: { id: 'job_1', status: 'queued' } });
+      }
+      if (requestUrl.endsWith('/sdcpp/v1/jobs/job_1/cancel')) {
+        cancelled = true;
+        return { status: 200, data: { id: 'job_1', cancel_requested: true } };
+      }
       if (requestUrl.endsWith('/sdcpp/v1/models/load')) {
         const next = recipes.find((candidate) => candidate.id === body.recipe);
         loaded = { id: next!.id, file: next!.models.diffusion_model.split('/').pop()! };
@@ -554,6 +601,17 @@ describe('generateStableDiffusionImage', () => {
       ).resolves.toEqual({ error: STABLE_DIFFUSION_MODELS_UNAVAILABLE });
       expect(generations()).toHaveLength(0);
     });
+
+    it('asks to try again for a clip', async () => {
+      probeFails('error');
+      await expect(
+        generateStableDiffusionImage(
+          { prompt: 'a cat', video: true },
+          { url, req: req(), allowVideo: true },
+        ),
+      ).resolves.toEqual({ error: STABLE_DIFFUSION_MODELS_UNAVAILABLE });
+      expect(mockPost).not.toHaveBeenCalled();
+    });
   });
 
   describe('with settings left to the model', () => {
@@ -647,5 +705,119 @@ describe('generateStableDiffusionImage', () => {
     await expect(
       generateStableDiffusionImage({ prompt: 'a cat', model: 'flux' }, { url, req: req() }),
     ).resolves.toEqual({ error: STABLE_DIFFUSION_MODEL_UNSUPPORTED });
+  });
+
+  describe('making a video clip', () => {
+    const clip = {
+      base64: 'UklGRg==',
+      mimeType: 'image/webp',
+      fps: 24,
+      frames: 9,
+      info: expect.objectContaining({ kind: 'video', seed: '7' }),
+    };
+
+    it('loads the requested video model and runs a job for the clip', async () => {
+      serve({ id: 'qwen', file: 'qwen.gguf' });
+      const result = await generateStableDiffusionImage(
+        { prompt: 'a red car driving', model: 'ltx', frames: 30, seed: 7 },
+        { url, req: req(), allowVideo: true },
+      );
+      expect(result).toEqual({ video: clip, model: 'ltx' });
+      expect(loadCalls()).toHaveLength(1);
+      expect(sent('/sdcpp/v1/vid_gen')).toEqual({
+        prompt: 'a red car driving',
+        video_frames: 25,
+        fps: 24,
+        seed: 7,
+        output_format: 'webp',
+        sample_params: { sample_steps: 8 },
+      });
+      expect(sent('/sdapi/v1/txt2img')).toBeUndefined();
+    });
+
+    it('uses the default video model for "video": true', async () => {
+      serve({ id: 'qwen', file: 'qwen.gguf' });
+      const result = await generateStableDiffusionImage(
+        { prompt: 'waves', video: true, duration: 1, width: 500, steps: 4, cfg_scale: 1.5 },
+        { url, req: req({ defaultVideo: 'ltx' }), allowVideo: true },
+      );
+      expect(result).toMatchObject({ video: clip, model: 'ltx' });
+      expect(sent('/sdcpp/v1/vid_gen')).toEqual({
+        prompt: 'waves',
+        width: 512,
+        video_frames: 17,
+        fps: 24,
+        output_format: 'webp',
+        sample_params: { sample_steps: 4, guidance: { txt_cfg: 1.5 } },
+      });
+    });
+
+    it("keeps the default clip within librechat.yaml's frame limit", async () => {
+      serve({ id: 'ltx', file: 'ltx.gguf' });
+      await generateStableDiffusionImage(
+        { prompt: 'waves', video: true },
+        { url, req: req(undefined, undefined, { maxFrames: 50 }), allowVideo: true },
+      );
+      expect(sent('/sdcpp/v1/vid_gen')).toMatchObject({ video_frames: 49 });
+      expect(loadCalls()).toHaveLength(0);
+    });
+
+    it.each([
+      [{ prompt: 'p', video: true }, {}, STABLE_DIFFUSION_VIDEO_UNSUPPORTED],
+      [
+        { prompt: 'p', video: true, image_ids: ['img-1'] },
+        { allowVideo: true },
+        STABLE_DIFFUSION_VIDEO_FROM_IMAGE,
+      ],
+      [{ prompt: 'p', video: true, count: 2 }, { allowVideo: true }, STABLE_DIFFUSION_VIDEO_COUNT],
+      [{ prompt: 'p', frames: 9 }, { allowVideo: true }, STABLE_DIFFUSION_CLIP_WITHOUT_VIDEO],
+      [
+        { prompt: 'p', model: 'qwen', video: true },
+        { allowVideo: true },
+        expect.stringContaining('makes images, not video'),
+      ],
+      [
+        { prompt: 'p', model: 'ltx', frames: 200 },
+        { allowVideo: true },
+        expect.stringContaining('"frames" must be'),
+      ],
+    ])('refuses %j before sending a job', async (input, context, error) => {
+      serve({ id: 'qwen', file: 'qwen.gguf' });
+      const result = await generateStableDiffusionImage(input, { url, req: req(), ...context });
+      expect(result).toEqual({ error });
+      expect(sent('/sdcpp/v1/vid_gen')).toBeUndefined();
+    });
+
+    it('cancels a job that outlasts videoGenerationMs', async () => {
+      serve({ id: 'ltx', file: 'ltx.gguf' }, undefined, { jobStates: ['generating'] });
+      const result = await generateStableDiffusionImage(
+        { prompt: 'waves', video: true },
+        { url, req: req(undefined, { videoGenerationMs: 1 }), allowVideo: true },
+      );
+      expect(result).toEqual({ error: stableDiffusionVideoTimeout(1) });
+      expect(sent('/sdcpp/v1/jobs/job_1/cancel')).toEqual({});
+    });
+
+    it('cancels the job when the response is stopped', async () => {
+      serve({ id: 'ltx', file: 'ltx.gguf' }, undefined, { jobStates: ['generating'] });
+      const controller = new AbortController();
+      const generation = generateStableDiffusionImage(
+        { prompt: 'waves', video: true },
+        { url, req: req(), allowVideo: true, signal: controller.signal },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      controller.abort(new Error('stopped'));
+      await expect(generation).rejects.toThrow('stopped');
+      expect(sent('/sdcpp/v1/jobs/job_1/cancel')).toEqual({});
+    });
+
+    it('reports a job the server failed', async () => {
+      serve({ id: 'ltx', file: 'ltx.gguf' }, undefined, { jobStates: ['failed'] });
+      const result = await generateStableDiffusionImage(
+        { prompt: 'waves', video: true },
+        { url, req: req(), allowVideo: true },
+      );
+      expect(result).toEqual({ error: STABLE_DIFFUSION_VIDEO_FAILED });
+    });
   });
 });

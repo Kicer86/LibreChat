@@ -66,9 +66,10 @@ class StableDiffusionAPI extends Tool {
 // - To change an existing image instead (img2img), pass its ID in "image_ids" and "denoising_strength" (0-1, how much it may change). img2img redraws the whole image from the prompt, so describe the full result; a color change needs about 0.85.
 // - When the tool context lists image models, set "model" only if another model suits the request better than the loaded one; loading a model takes extra time.
 // - "width", "height", "steps", "cfg_scale", "seed", "count", "sampler" and "scheduler" are optional; omit them unless the user asks for a size, a format, a seed or other settings, since each model has suitable defaults. To make a variation of an earlier image, reuse its seed and change the prompt or settings.
+// - When the tool context lists video models and the user asks for a video or an animation, set "video": true (and "model" to choose a video model). Describe the motion as well as the scene. "frames" or "duration" and "fps" are optional; a clip takes minutes, so make one per request.
 // - Generate images only once per human query unless explicitly requested by the user`;
     this.description =
-      "You can generate images using text with 'stable-diffusion', or change an existing image (img2img) by passing its ID in image_ids. This tool is exclusively for visual content.";
+      "You can generate images using text with 'stable-diffusion', change an existing image (img2img) by passing its ID in image_ids, or make a short video clip when video models are listed. This tool is exclusively for visual content.";
     this.schema = stableDiffusionSchema;
   }
 
@@ -106,7 +107,12 @@ class StableDiffusionAPI extends Tool {
     return url;
   }
 
-  async _call(data) {
+  /**
+   * @param {object} data
+   * @param {unknown} [_runManager]
+   * @param {{ signal?: AbortSignal }} [runnableConfig]
+   */
+  async _call(data, _runManager, runnableConfig) {
     const { prompt, negative_prompt } = data;
     let generation;
     try {
@@ -120,6 +126,8 @@ class StableDiffusionAPI extends Tool {
         getStrategyFunctions: this.getStrategyFunctions,
         generatedImages: this.generatedImages,
         lock: this.lock,
+        signal: runnableConfig?.signal,
+        allowVideo: this.isAgent === true,
       });
       if ('error' in generation) {
         return this.returnValue(generation.error);
@@ -130,7 +138,7 @@ class StableDiffusionAPI extends Tool {
     }
     if (this.isAgent) {
       return buildStableDiffusionAgentOutput({
-        data: generation.data,
+        generation,
         model: generation.model,
         displayMessage,
         createFileId: uuidv4,

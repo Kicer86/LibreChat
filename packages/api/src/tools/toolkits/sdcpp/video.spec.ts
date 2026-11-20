@@ -1,5 +1,5 @@
 import type { SdcppJobClient } from './video';
-import { runSdcppVideoJob, SdcppVideoJobError } from './video';
+import { buildSdcppVideoBody, runSdcppVideoJob, SdcppVideoJobError } from './video';
 
 const url = 'http://sd.local';
 const jobUrl = `${url}/sdcpp/v1/jobs/job_1`;
@@ -16,7 +16,7 @@ const clip = {
 function fakeServer(states: Array<Record<string, unknown>>, submit = { status: 202 }) {
   let polls = 0;
   const requests: string[] = [];
-  const probe = jest.fn(async (requestUrl: string) => {
+  const probe = jest.fn(async (requestUrl: string): Promise<{ status: number; data: unknown }> => {
     requests.push(`GET ${requestUrl}`);
     const state = states[Math.min(polls, states.length - 1)];
     polls++;
@@ -205,5 +205,49 @@ describe('runSdcppVideoJob', () => {
     expect(result).toEqual({ status: 'timeout' });
     expect(clock.now()).toBeGreaterThanOrEqual(120_000);
     expect(clock.now()).toBeLessThan(125_000);
+  });
+});
+
+describe('buildSdcppVideoBody', () => {
+  it('nests the sampling settings and asks for an animated WebP', () => {
+    expect(
+      buildSdcppVideoBody(
+        {
+          prompt: 'a red car',
+          negative_prompt: 'blur',
+          width: 512,
+          height: 320,
+          steps: 8,
+          cfg_scale: 1,
+          seed: 7,
+          sampler_name: 'euler',
+          scheduler: 'ltx2',
+        },
+        { frames: 9, fps: 24 },
+      ),
+    ).toEqual({
+      prompt: 'a red car',
+      negative_prompt: 'blur',
+      width: 512,
+      height: 320,
+      video_frames: 9,
+      fps: 24,
+      seed: 7,
+      output_format: 'webp',
+      sample_params: {
+        sample_steps: 8,
+        sample_method: 'euler',
+        scheduler: 'ltx2',
+        guidance: { txt_cfg: 1 },
+      },
+    });
+  });
+
+  it("leaves the settings not asked for to the recipe's defaults", () => {
+    expect(buildSdcppVideoBody({ prompt: 'a cat', negative_prompt: '' }, { frames: 121 })).toEqual({
+      prompt: 'a cat',
+      video_frames: 121,
+      output_format: 'webp',
+    });
   });
 });
