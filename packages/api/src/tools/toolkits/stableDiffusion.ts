@@ -749,7 +749,7 @@ export async function generateStableDiffusionImage(
         },
         clip.value,
       ),
-      client: sdcppClient(context, signal),
+      connect: (jobSignal) => sdcppClient(context, jobSignal),
       cleanup: sdcppClient(context),
       signal,
       budgetMs,

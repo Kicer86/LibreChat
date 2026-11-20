@@ -43,8 +43,11 @@ export interface RunSdcppVideoJobParams {
   url: string;
   /** The `vid_gen` body, in sd-server's native schema. */
   body: Record<string, unknown>;
-  /** Requests made while the generation runs; each ends when `signal` fires. */
-  client: SdcppJobClient;
+  /**
+   * Requests made while the generation runs, each ending when the given signal fires: the
+   * caller's `signal`, or the end of `budgetMs`.
+   */
+  connect: (signal: AbortSignal) => SdcppJobClient;
   /**
    * Requests made after the generation stopped, to cancel the job and wait for it to end; they
    * must not end with `signal`, which has already fired.
@@ -159,9 +162,18 @@ async function cancelJob(
   return 'unconfirmed';
 }
 
+/** The budget of a video job ran out while one of its requests was waiting for an answer. */
+class SdcppVideoBudgetError extends Error {
+  constructor() {
+    super('video job budget ran out');
+    this.name = 'SdcppVideoBudgetError';
+  }
+}
+
 /**
  * Runs a stable-diffusion.cpp video job (`POST /sdcpp/v1/vid_gen`) and waits for its clip,
- * asking `GET /sdcpp/v1/jobs/{id}` for its state. A job still running when the budget ends, when
+ * asking `GET /sdcpp/v1/jobs/{id}` for its state. The budget starts when the job is sent and also
+ * ends a request still waiting for an answer. A job still running when the budget ends, when
  * `signal` fires, or when its state cannot be read is cancelled (`POST .../cancel`), and the
  * call waits for it to end, so the server is free for the next one. A fired `signal` then
  * rejects with its reason. sd-server keeps a finished job only for a while, so its clip is read
@@ -170,7 +182,7 @@ async function cancelJob(
 export async function runSdcppVideoJob({
   url,
   body,
-  client,
+  connect,
   cleanup,
   signal,
   budgetMs,
@@ -178,18 +190,28 @@ export async function runSdcppVideoJob({
   sleep = sleepUnlessAborted,
 }: RunSdcppVideoJobParams): Promise<SdcppVideoJobResult> {
   const deadline = now() + budgetMs;
-  const submitted = await client.post(`${url}/sdcpp/v1/vid_gen`, body);
-  if (submitted.status >= 400 && submitted.status < 500) {
-    return { status: 'rejected', httpStatus: submitted.status };
-  }
-  const id = isPlainObject(submitted.data) ? submitted.data.id : undefined;
-  if (submitted.status >= 300 || typeof id !== 'string' || id.length === 0) {
-    throw new SdcppVideoJobError(`video job request answered HTTP ${submitted.status}`);
-  }
-
-  const jobUrl = `${url}/sdcpp/v1/jobs/${encodeURIComponent(id)}`;
-  const settle = () => cancelJob(cleanup, jobUrl, now, (ms) => sleep(ms));
+  const budget = new AbortController();
+  const timer = setTimeout(() => budget.abort(new SdcppVideoBudgetError()), budgetMs);
+  timer.unref?.();
+  const jobSignal = AbortSignal.any([signal, budget.signal]);
+  const client = connect(jobSignal);
+  let jobUrl: string | undefined;
+  const settle = async () => {
+    if (jobUrl) {
+      await cancelJob(cleanup, jobUrl, now, (ms) => sleep(ms));
+    }
+  };
   try {
+    const submitted = await client.post(`${url}/sdcpp/v1/vid_gen`, body);
+    if (submitted.status >= 400 && submitted.status < 500) {
+      return { status: 'rejected', httpStatus: submitted.status };
+    }
+    const id = isPlainObject(submitted.data) ? submitted.data.id : undefined;
+    if (submitted.status >= 300 || typeof id !== 'string' || id.length === 0) {
+      throw new SdcppVideoJobError(`video job request answered HTTP ${submitted.status}`);
+    }
+    jobUrl = `${url}/sdcpp/v1/jobs/${encodeURIComponent(id)}`;
+
     for (;;) {
       const job = await readJob(client.probe, jobUrl);
       if (job.status === 'completed') {
@@ -198,16 +220,21 @@ export async function runSdcppVideoJob({
       if (job.status === 'failed' || job.status === 'cancelled') {
         return { status: 'failed', code: failureCode(job.data, job.status) };
       }
-      if (now() >= deadline) {
+      if (now() >= deadline || budget.signal.aborted) {
         await settle();
         return { status: 'timeout' };
       }
-      await sleep(Math.min(POLL_MS, Math.max(0, deadline - now())), signal);
+      await sleep(Math.min(POLL_MS, Math.max(0, deadline - now())), jobSignal);
     }
   } catch (error) {
     await settle();
     signal.throwIfAborted();
+    if (budget.signal.aborted) {
+      return { status: 'timeout' };
+    }
     throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

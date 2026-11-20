@@ -22,7 +22,7 @@ function fakeServer(states: Array<Record<string, unknown>>, submit = { status: 2
     polls++;
     return { status: 200, data: { id: 'job_1', ...state } };
   });
-  const post = jest.fn(async (requestUrl: string) => {
+  const post = jest.fn(async (requestUrl: string): Promise<{ status: number; data: unknown }> => {
     requests.push(`POST ${requestUrl}`);
     if (requestUrl.endsWith('/cancel')) {
       return { status: 200, data: { cancel_requested: true } };
@@ -56,7 +56,7 @@ describe('runSdcppVideoJob', () => {
     const result = await runSdcppVideoJob({
       url,
       body,
-      client: server.client,
+      connect: () => server.client,
       cleanup: server.client,
       signal: new AbortController().signal,
       budgetMs: 60_000,
@@ -84,7 +84,7 @@ describe('runSdcppVideoJob', () => {
     const result = await runSdcppVideoJob({
       url,
       body,
-      client: server.client,
+      connect: () => server.client,
       cleanup: server.client,
       signal: new AbortController().signal,
       budgetMs: 60_000,
@@ -98,7 +98,7 @@ describe('runSdcppVideoJob', () => {
     const result = await runSdcppVideoJob({
       url,
       body,
-      client: server.client,
+      connect: () => server.client,
       cleanup: server.client,
       signal: new AbortController().signal,
       budgetMs: 60_000,
@@ -114,7 +114,7 @@ describe('runSdcppVideoJob', () => {
       runSdcppVideoJob({
         url,
         body,
-        client: server.client,
+        connect: () => server.client,
         cleanup: server.client,
         signal: new AbortController().signal,
         budgetMs: 60_000,
@@ -134,7 +134,7 @@ describe('runSdcppVideoJob', () => {
     const result = await runSdcppVideoJob({
       url,
       body,
-      client: server.client,
+      connect: () => server.client,
       cleanup: server.client,
       signal: new AbortController().signal,
       budgetMs: 3_000,
@@ -163,7 +163,7 @@ describe('runSdcppVideoJob', () => {
       runSdcppVideoJob({
         url,
         body,
-        client: server.client,
+        connect: () => server.client,
         cleanup: cleanup.client,
         signal: controller.signal,
         budgetMs: 60_000,
@@ -180,7 +180,7 @@ describe('runSdcppVideoJob', () => {
       runSdcppVideoJob({
         url,
         body,
-        client: server.client,
+        connect: () => server.client,
         cleanup: server.client,
         signal: new AbortController().signal,
         budgetMs: 60_000,
@@ -188,6 +188,54 @@ describe('runSdcppVideoJob', () => {
       }),
     ).rejects.toBeInstanceOf(SdcppVideoJobError);
     expect(server.requests).toContain(`POST ${jobUrl}/cancel`);
+  });
+
+  it('ends a request still waiting when the budget runs out, then cancels the job', async () => {
+    const server = fakeServer([{ status: 'cancelled' }]);
+    let requestSignal: AbortSignal | undefined;
+    const hanging = {
+      post: server.post,
+      probe: jest.fn(
+        (_requestUrl: string) =>
+          new Promise<{ status: number; data: unknown }>((_resolve, reject) => {
+            requestSignal?.addEventListener('abort', () => reject(new Error('canceled')));
+          }),
+      ),
+    };
+    const result = await runSdcppVideoJob({
+      url,
+      body,
+      connect: (signal) => {
+        requestSignal = signal;
+        return hanging;
+      },
+      cleanup: server.client,
+      signal: new AbortController().signal,
+      budgetMs: 20,
+    });
+    expect(result).toEqual({ status: 'timeout' });
+    expect(requestSignal?.aborted).toBe(true);
+    expect(server.requests).toContain(`POST ${jobUrl}/cancel`);
+  });
+
+  it('ends a job request still waiting when the budget runs out', async () => {
+    const server = fakeServer([]);
+    const result = await runSdcppVideoJob({
+      url,
+      body,
+      connect: (signal) => ({
+        probe: server.probe,
+        post: () =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('canceled')));
+          }),
+      }),
+      cleanup: server.client,
+      signal: new AbortController().signal,
+      budgetMs: 20,
+    });
+    expect(result).toEqual({ status: 'timeout' });
+    expect(server.requests).toEqual([]);
   });
 
   it('keeps waiting for a cancelled job through a passing read error', async () => {
@@ -204,7 +252,7 @@ describe('runSdcppVideoJob', () => {
     const result = runSdcppVideoJob({
       url,
       body,
-      client: server.client,
+      connect: () => server.client,
       cleanup: server.client,
       signal: new AbortController().signal,
       budgetMs: 1,
@@ -237,7 +285,7 @@ describe('runSdcppVideoJob', () => {
     const result = await runSdcppVideoJob({
       url,
       body,
-      client: server.client,
+      connect: () => server.client,
       cleanup: server.client,
       signal: new AbortController().signal,
       budgetMs: 1,
@@ -255,7 +303,7 @@ describe('runSdcppVideoJob', () => {
     const result = await runSdcppVideoJob({
       url,
       body,
-      client: server.client,
+      connect: () => server.client,
       cleanup: server.client,
       signal: new AbortController().signal,
       budgetMs: 1_000,
