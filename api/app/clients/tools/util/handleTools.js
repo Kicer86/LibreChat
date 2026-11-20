@@ -82,6 +82,7 @@ const {
   getFormattedMemories,
 } = require('~/models');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+const { distributedLock } = require('~/cache');
 
 /** @typedef {typeof import('@librechat/agents/langchain/tools').Tool} ToolConstructor */
 /** @typedef {import('@librechat/agents/langchain/tools').Tool} Tool */
@@ -257,6 +258,7 @@ const loadTools = async ({
       findImageFiles: getUserImageFiles,
       generatedImages,
       getStrategyFunctions,
+      lock: distributedLock,
     },
     gemini_image_gen: imageGenOptions,
   };

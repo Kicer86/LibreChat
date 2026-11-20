@@ -40,6 +40,7 @@ describe('prepareStableDiffusionRequest', () => {
       url: `${url}/sdapi/v1/txt2img`,
       payload: { prompt: 'a cat', cfg_scale: 4.5, steps: 22 },
       config: expect.objectContaining({ timeout: 5678 }),
+      backend: 'sdcpp',
     });
     expect(applySSRFSafeAgentIfDirect).not.toHaveBeenCalled();
   });

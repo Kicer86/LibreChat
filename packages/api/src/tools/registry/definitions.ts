@@ -202,6 +202,11 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
       description:
         'Only with image_ids: how much the image may change, from 0 (keep it) to 1 (ignore it). Up to about 0.75 the colors and shapes stay and only details change; changing a color or replacing an object needs about 0.85; about 0.95 keeps only the rough composition. Omit for the server default.',
     },
+    model: {
+      type: 'string',
+      description:
+        'ID of the model to generate with, when the tool context lists the available models. Omit to keep the loaded model; loading another one takes extra time.',
+    },
   },
   required: ['prompt'],
 };

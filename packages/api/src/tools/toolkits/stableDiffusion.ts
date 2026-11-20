@@ -1,10 +1,24 @@
 import axios from 'axios';
+import { logger } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
 import type { GeneratedImageRegistry, ImageInput, LoadImageInputsParams } from './images';
+import type { SdcppModelStatus, SdcppProbe, SdcppPost } from './sdcpp';
+import type { DistributedLock } from '~/cache/lock';
 import type { ServerRequest } from '~/types';
-import { configuredRequestBudget } from '~/utils/timeouts';
+import {
+  loadSdcppModel,
+  getSdcppCatalog,
+  chooseSdcppModel,
+  SdcppModelError,
+  noteSdcppModelLoaded,
+  readSdcppModelStatus,
+  withSdcppServerLock,
+  findSdcppModelMismatch,
+} from './sdcpp';
+import { configuredRequestBudget, getOutboundTimeoutMs } from '~/utils/timeouts';
 import { applySSRFSafeAgentIfDirect } from '~/auth/agent';
+import { createDistributedLock } from '~/cache/lock';
 import { loadImageInputs } from './images';
 
 /** Longest side of a generated image (txt2img renders a square of this size). */
@@ -174,6 +188,8 @@ export interface StableDiffusionToolInput {
   negative_prompt?: string;
   image_ids?: string[];
   denoising_strength?: number;
+  /** stable-diffusion.cpp model (recipe ID) to generate with; omitted, the loaded one is kept. */
+  model?: string;
 }
 
 /** What the `stable-diffusion` tool is created with, from the server's wiring. */
@@ -190,11 +206,24 @@ export interface StableDiffusionToolContext {
   findImageFiles?: LoadImageInputsParams['findImageFiles'];
   getStrategyFunctions?: LoadImageInputsParams['getStrategyFunctions'];
   generatedImages?: GeneratedImageRegistry;
+  /**
+   * Serializes model loads and generations on one stable-diffusion.cpp server. Pass the app's
+   * shared lock (Redis-backed with several instances); without one, a lock local to this
+   * process is used.
+   */
+  lock?: DistributedLock;
 }
 
 export type PreparedStableDiffusionRequest =
   | { error: string }
-  | { url: string; payload: Record<string, unknown>; config: AxiosRequestConfig };
+  | {
+      url: string;
+      payload: Record<string, unknown>;
+      config: AxiosRequestConfig;
+      backend: StableDiffusionBackend;
+      /** The input image, for img2img. */
+      image?: ImageInput;
+    };
 
 /** Axios config for a request to `requestUrl`, SSRF-guarded when the user set the URL. */
 function stableDiffusionRequestConfig(
@@ -266,5 +295,140 @@ export async function prepareStableDiffusionRequest(
     ...stableDiffusionRequestConfig(context, url, {}),
     ...configuredRequestBudget(appConfig, 'imageGenerationMs'),
   };
-  return { url, payload, config };
+  return { url, payload, config, backend, ...(image && { image }) };
+}
+
+/** A Stable Diffusion WebUI API generation response (`images` base64, `info` JSON text). */
+export interface StableDiffusionResponse {
+  images: string[];
+  info?: string;
+  [key: string]: unknown;
+}
+
+export type StableDiffusionGeneration =
+  | { error: string }
+  | {
+      data: StableDiffusionResponse;
+      /** The stable-diffusion.cpp model (recipe ID) that generated the image, when known. */
+      model?: string;
+    };
+
+/** Shown to the model when it names a model on a server that has no model list. */
+export const STABLE_DIFFUSION_MODEL_UNSUPPORTED =
+  'This image server does not offer a choice of models. Omit "model".';
+/** Shown to the model when the chosen model could not be loaded or kept loaded. */
+export const stableDiffusionModelFailed = (model: string) =>
+  `The image model "${model}" could not be loaded. Try again later, or choose another model.`;
+
+/** Used when the caller passes no lock; it coordinates only this process's generations. */
+const processLock = createDistributedLock();
+
+function sdcppClient(context: StableDiffusionToolContext): {
+  probe: SdcppProbe;
+  post: SdcppPost;
+} {
+  const appConfig = context.req?.config;
+  return {
+    probe: (requestUrl) =>
+      axios.get(
+        requestUrl,
+        stableDiffusionRequestConfig(context, requestUrl, {
+          ...configuredRequestBudget(appConfig, 'toolsMs'),
+          validateStatus: () => true,
+        }),
+      ),
+    post: (requestUrl, body) =>
+      axios.post(
+        requestUrl,
+        body,
+        stableDiffusionRequestConfig(context, requestUrl, {
+          ...configuredRequestBudget(appConfig, 'imageGenerationMs'),
+          validateStatus: () => true,
+        }),
+      ),
+  };
+}
+
+/**
+ * Generates an image for the tool's input. On a stable-diffusion.cpp server that lists its
+ * models, the model is chosen (`chooseSdcppModel`), loaded when it is not loaded yet, and checked
+ * against the files the result names; a model switched by another client during the generation
+ * is retried once. The load and the generation hold the server lock. Other servers get the
+ * request as it is.
+ */
+export async function generateStableDiffusionImage(
+  input: StableDiffusionToolInput,
+  context: StableDiffusionToolContext,
+): Promise<StableDiffusionGeneration> {
+  const request = await prepareStableDiffusionRequest(input, context);
+  if ('error' in request) {
+    return request;
+  }
+  const generate = async () =>
+    (await axios.post<StableDiffusionResponse>(request.url, request.payload, request.config)).data;
+
+  const client = sdcppClient(context);
+  const catalog =
+    request.backend === 'sdcpp' ? await getSdcppCatalog(context.url, client.probe) : undefined;
+  if (!catalog) {
+    if (input.model) {
+      return { error: STABLE_DIFFUSION_MODEL_UNSUPPORTED };
+    }
+    return { data: await generate() };
+  }
+
+  const appConfig = context.req?.config;
+  const lockParams = {
+    lock: context.lock ?? processLock,
+    url: context.url,
+    waitMs: getOutboundTimeoutMs(appConfig, 'imageGenerationMs'),
+  };
+  type Attempt = StableDiffusionGeneration | { switchedAway: string };
+  const attempt = async (requested?: string): Promise<Attempt> => {
+    let status: SdcppModelStatus = await readSdcppModelStatus(context.url, client.probe);
+    noteSdcppModelLoaded(context.url, status.recipe);
+    const choice = chooseSdcppModel({
+      catalog: { models: catalog.models, ...(status.recipe && { loaded: status.recipe }) },
+      config: appConfig?.stableDiffusion?.models,
+      requested,
+      withImage: request.image != null,
+    });
+    if (!choice.ok) {
+      return { error: choice.error.message };
+    }
+    if (!choice.model) {
+      return { data: await generate(), ...(status.recipe && { model: status.recipe }) };
+    }
+
+    const model = choice.model.id;
+    try {
+      status = await loadSdcppModel(context.url, model, status, client.post);
+    } catch (error) {
+      if (!(error instanceof SdcppModelError)) {
+        throw error;
+      }
+      logger.warn(`[StableDiffusion] Could not load ${model}: ${error.message}`);
+      return { error: stableDiffusionModelFailed(model) };
+    }
+    noteSdcppModelLoaded(context.url, status.recipe);
+
+    const data = await generate();
+    const mismatch = findSdcppModelMismatch(status, data.info);
+    if (mismatch) {
+      logger.warn(`[StableDiffusion] The model changed while ${model} generated (${mismatch})`);
+      return { switchedAway: model };
+    }
+    return { data, model };
+  };
+
+  return withSdcppServerLock(lockParams, async (): Promise<StableDiffusionGeneration> => {
+    const first = await attempt(input.model);
+    if (!('switchedAway' in first)) {
+      return first;
+    }
+    const second = await attempt(first.switchedAway);
+    return 'switchedAway' in second
+      ? { error: stableDiffusionModelFailed(second.switchedAway) }
+      : second;
+  });
 }

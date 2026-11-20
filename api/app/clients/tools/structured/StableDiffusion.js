@@ -1,7 +1,6 @@
 // Generates image using stable diffusion webui's api (automatic1111)
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios');
 const sharp = require('sharp');
 const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
@@ -10,7 +9,7 @@ const { FileContext, ContentTypes } = require('librechat-data-provider');
 const {
   getBasePath,
   stableDiffusionSchema,
-  prepareStableDiffusionRequest,
+  generateStableDiffusionImage,
 } = require('@librechat/api');
 const paths = require('~/config/paths');
 
@@ -48,6 +47,8 @@ class StableDiffusionAPI extends Tool {
     this.getStrategyFunctions = fields.getStrategyFunctions;
     /** @type {import('@librechat/api').GeneratedImageRegistry | undefined} Images generated in this request, before their files are saved */
     this.generatedImages = fields.generatedImages;
+    /** @type {import('@librechat/api').DistributedLock | undefined} Serializes model switches on a stable-diffusion.cpp server */
+    this.lock = fields.lock;
 
     this.name = 'stable-diffusion';
     this.url = fields.SD_WEBUI_URL || this.getServerURL();
@@ -104,9 +105,9 @@ class StableDiffusionAPI extends Tool {
 
   async _call(data) {
     const { prompt, negative_prompt } = data;
-    let generationResponse;
+    let generation;
     try {
-      const request = await prepareStableDiffusionRequest(data, {
+      generation = await generateStableDiffusionImage(data, {
         url: this.url,
         req: this.req,
         isUserProvidedEndpoint: this.isUserProvidedEndpoint,
@@ -115,21 +116,21 @@ class StableDiffusionAPI extends Tool {
         findImageFiles: this.findImageFiles,
         getStrategyFunctions: this.getStrategyFunctions,
         generatedImages: this.generatedImages,
+        lock: this.lock,
       });
-      if ('error' in request) {
-        return this.returnValue(request.error);
+      if ('error' in generation) {
+        return this.returnValue(generation.error);
       }
-      generationResponse = await axios.post(request.url, request.payload, request.config);
     } catch (error) {
       logger.error('[StableDiffusion] Error while generating image:', error);
       return this.returnValue('Error making API request.');
     }
-    const image = generationResponse.data.images[0];
+    const image = generation.data.images[0];
 
     /** @type {{ height: number, width: number, seed: number, infotexts: string[] }} */
     let info = {};
     try {
-      info = JSON.parse(generationResponse.data.info);
+      info = JSON.parse(generation.data.info);
     } catch (error) {
       logger.error('[StableDiffusion] Error while getting image metadata:', error);
     }
@@ -164,7 +165,9 @@ class StableDiffusionAPI extends Tool {
         const response = [
           {
             type: ContentTypes.TEXT,
-            text: `${displayMessage}\n\ngenerated_image_id: "${file_id}"`,
+            text: `${displayMessage}\n\ngenerated_image_id: "${file_id}"${
+              generation.model ? `\nmodel: "${generation.model}"` : ''
+            }`,
           },
         ];
         return [response, { content, file_ids: [file_id] }];
