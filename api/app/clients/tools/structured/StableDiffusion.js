@@ -9,20 +9,13 @@ const { Tool } = require('@librechat/agents/langchain/tools');
 const { FileContext, ContentTypes } = require('librechat-data-provider');
 const {
   getBasePath,
-  loadImageInputs,
   stableDiffusionSchema,
-  configuredRequestBudget,
-  applySSRFSafeAgentIfDirect,
-  buildStableDiffusionRequest,
-  detectStableDiffusionBackend,
+  prepareStableDiffusionRequest,
 } = require('@librechat/api');
 const paths = require('~/config/paths');
 
 const displayMessage =
   "Stable Diffusion displayed an image. All generated images are already plainly visible, so don't repeat the descriptions in detail. Do not list download links as they are available in the UI already. The user may download the images by clicking on them, but do not mention anything about downloading to the user.";
-
-/** Detecting the backend is a quick GET; a slow server falls back to the WebUI defaults. */
-const BACKEND_PROBE_TIMEOUT_MS = 5000;
 
 class StableDiffusionAPI extends Tool {
   constructor(fields) {
@@ -109,72 +102,24 @@ class StableDiffusionAPI extends Tool {
     return url;
   }
 
-  /**
-   * Resolves the first requested image ID to image bytes for img2img.
-   * @returns {Promise<import('@librechat/api').ImageInput | undefined>}
-   */
-  async loadInputImage(image_ids) {
-    if (!this.findImageFiles || !this.getStrategyFunctions) {
-      return undefined;
-    }
-    const [image] = await loadImageInputs({
-      imageIds: image_ids.slice(0, 1),
-      requestFiles: this.imageFiles,
-      req: this.req,
-      fileStrategy: this.fileStrategy,
-      findImageFiles: this.findImageFiles,
-      getStrategyFunctions: this.getStrategyFunctions,
-      generatedImages: this.generatedImages,
-      logPrefix: '[StableDiffusion]',
-    });
-    return image;
-  }
-
-  /** Axios config for a request to `requestUrl`, SSRF-guarded when the user set the URL. */
-  getRequestConfig(requestUrl, config = {}) {
-    return this.isUserProvidedEndpoint ? applySSRFSafeAgentIfDirect(config, requestUrl) : config;
-  }
-
-  /** @returns {Promise<import('@librechat/api').StableDiffusionBackend>} */
-  detectBackend() {
-    return detectStableDiffusionBackend(this.url, (probeUrl) =>
-      axios.get(
-        probeUrl,
-        this.getRequestConfig(probeUrl, {
-          timeout: BACKEND_PROBE_TIMEOUT_MS,
-          validateStatus: () => true,
-        }),
-      ),
-    );
-  }
-
   async _call(data) {
-    const url = this.url;
-    const { prompt, negative_prompt, image_ids, denoising_strength } = data;
-    let inputImage;
-    if (image_ids?.length) {
-      inputImage = await this.loadInputImage(image_ids);
-      if (!inputImage) {
-        return this.returnValue(
-          'The image to change could not be loaded. Use the ID of an image attached to this request or generated earlier.',
-        );
-      }
-    }
+    const { prompt, negative_prompt } = data;
     let generationResponse;
     try {
-      const { path: apiPath, payload } = buildStableDiffusionRequest({
-        prompt,
-        negative_prompt,
-        image: inputImage,
-        denoising_strength,
-        backend: await this.detectBackend(),
+      const request = await prepareStableDiffusionRequest(data, {
+        url: this.url,
+        req: this.req,
+        isUserProvidedEndpoint: this.isUserProvidedEndpoint,
+        imageFiles: this.imageFiles,
+        fileStrategy: this.fileStrategy,
+        findImageFiles: this.findImageFiles,
+        getStrategyFunctions: this.getStrategyFunctions,
+        generatedImages: this.generatedImages,
       });
-      const requestUrl = `${url}${apiPath}`;
-      const requestConfig = {
-        ...this.getRequestConfig(requestUrl),
-        ...configuredRequestBudget(this.req?.config, 'imageGenerationMs'),
-      };
-      generationResponse = await axios.post(requestUrl, payload, requestConfig);
+      if ('error' in request) {
+        return this.returnValue(request.error);
+      }
+      generationResponse = await axios.post(request.url, request.payload, request.config);
     } catch (error) {
       logger.error('[StableDiffusion] Error while generating image:', error);
       return this.returnValue('Error making API request.');

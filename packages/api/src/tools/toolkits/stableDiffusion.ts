@@ -1,4 +1,11 @@
-import type { ImageInput } from './images';
+import axios from 'axios';
+import type { TFile } from 'librechat-data-provider';
+import type { AxiosRequestConfig } from 'axios';
+import type { GeneratedImageRegistry, ImageInput, LoadImageInputsParams } from './images';
+import type { ServerRequest } from '~/types';
+import { configuredRequestBudget } from '~/utils/timeouts';
+import { applySSRFSafeAgentIfDirect } from '~/auth/agent';
+import { loadImageInputs } from './images';
 
 /** Longest side of a generated image (txt2img renders a square of this size). */
 const IMAGE_SIZE = 1024;
@@ -148,4 +155,108 @@ export function buildStableDiffusionRequest({
     payload.denoising_strength = denoising_strength;
   }
   return { path: '/sdapi/v1/img2img', payload };
+}
+
+/** Shown to the model when `image_ids` names no image it may use. */
+export const STABLE_DIFFUSION_IMAGE_NOT_LOADED =
+  'The image to change could not be loaded. Use the ID of an image attached to this request or generated earlier.';
+
+export interface StableDiffusionToolInput {
+  prompt: string;
+  negative_prompt?: string;
+  image_ids?: string[];
+  denoising_strength?: number;
+}
+
+/** What the `stable-diffusion` tool is created with, from the server's wiring. */
+export interface StableDiffusionToolContext {
+  /** Base URL of the WebUI-compatible API (`SD_WEBUI_URL`). */
+  url: string;
+  req?: ServerRequest;
+  /** A URL the user entered is reached only through the SSRF-guarded agent. */
+  isUserProvidedEndpoint?: boolean;
+  /** Images attached to the request (the `image_edit` tool resource). */
+  imageFiles?: TFile[];
+  fileStrategy?: string;
+  /** Owner-scoped image lookup and storage access; without them img2img is unavailable. */
+  findImageFiles?: LoadImageInputsParams['findImageFiles'];
+  getStrategyFunctions?: LoadImageInputsParams['getStrategyFunctions'];
+  generatedImages?: GeneratedImageRegistry;
+}
+
+export type PreparedStableDiffusionRequest =
+  | { error: string }
+  | { url: string; payload: Record<string, unknown>; config: AxiosRequestConfig };
+
+/** Axios config for a request to `requestUrl`, SSRF-guarded when the user set the URL. */
+function stableDiffusionRequestConfig(
+  context: StableDiffusionToolContext,
+  requestUrl: string,
+  config: AxiosRequestConfig,
+): AxiosRequestConfig {
+  return context.isUserProvidedEndpoint ? applySSRFSafeAgentIfDirect(config, requestUrl) : config;
+}
+
+async function loadInputImage(
+  context: StableDiffusionToolContext,
+  imageIds: string[],
+): Promise<ImageInput | undefined> {
+  const { findImageFiles, getStrategyFunctions } = context;
+  if (!findImageFiles || !getStrategyFunctions) {
+    return undefined;
+  }
+  const [image] = await loadImageInputs({
+    imageIds: imageIds.slice(0, 1),
+    requestFiles: context.imageFiles ?? [],
+    req: context.req,
+    fileStrategy: context.fileStrategy,
+    findImageFiles,
+    getStrategyFunctions,
+    generatedImages: context.generatedImages,
+    logPrefix: '[StableDiffusion]',
+  });
+  return image;
+}
+
+/**
+ * Turns the tool's input into the generation request: loads the image to change (img2img),
+ * detects the backend, and builds the payload and the HTTP config. The probe and the generation
+ * get the `toolsMs` and `imageGenerationMs` budgets, and both go through the SSRF guard for a
+ * user-provided URL, which throws for a blocked address.
+ */
+export async function prepareStableDiffusionRequest(
+  input: StableDiffusionToolInput,
+  context: StableDiffusionToolContext,
+): Promise<PreparedStableDiffusionRequest> {
+  let image: ImageInput | undefined;
+  if (input.image_ids?.length) {
+    image = await loadInputImage(context, input.image_ids);
+    if (!image) {
+      return { error: STABLE_DIFFUSION_IMAGE_NOT_LOADED };
+    }
+  }
+
+  const appConfig = context.req?.config;
+  const backend = await detectStableDiffusionBackend(context.url, (probeUrl) =>
+    axios.get(
+      probeUrl,
+      stableDiffusionRequestConfig(context, probeUrl, {
+        ...configuredRequestBudget(appConfig, 'toolsMs'),
+        validateStatus: () => true,
+      }),
+    ),
+  );
+  const { path, payload } = buildStableDiffusionRequest({
+    prompt: input.prompt,
+    negative_prompt: input.negative_prompt,
+    image,
+    denoising_strength: input.denoising_strength,
+    backend,
+  });
+  const url = `${context.url}${path}`;
+  const config = {
+    ...stableDiffusionRequestConfig(context, url, {}),
+    ...configuredRequestBudget(appConfig, 'imageGenerationMs'),
+  };
+  return { url, payload, config };
 }
