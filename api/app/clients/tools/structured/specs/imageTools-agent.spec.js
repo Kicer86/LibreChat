@@ -8,6 +8,7 @@
  * dumping base64 into token counting and causing context exhaustion.
  */
 
+const { Readable } = require('stream');
 const axios = require('axios');
 const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
@@ -501,6 +502,111 @@ describe('image tools - agent mode ToolMessage format', () => {
       expect(Array.isArray(artifactContent)).toBe(true);
       expect(artifactContent[0].type).toBe(ContentTypes.IMAGE_URL);
       expect(artifactContent[0].image_url.url).toContain('base64');
+    });
+
+    it('generates from text with txt2img when no image is given', async () => {
+      const sd = new StableDiffusionAPI({ isAgent: true, override: true, userId: 'user-1' });
+      await sd.invoke(makeToolCall('stable-diffusion', { prompt: 'a box', negative_prompt: '' }));
+
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://localhost:7860/sdapi/v1/txt2img',
+        expect.not.objectContaining({ init_images: expect.anything() }),
+        expect.any(Object),
+      );
+    });
+
+    describe('img2img', () => {
+      const attached = {
+        file_id: 'img-1',
+        filepath: '/images/user-1/img-1.png',
+        source: 'local',
+        type: 'image/png',
+        width: 1600,
+        height: 900,
+      };
+      const imageBytes = Buffer.from('attached-image-bytes');
+      const req = { user: { id: 'user-1' }, config: {} };
+      const makeImageTool = (fields = {}) =>
+        new StableDiffusionAPI({
+          isAgent: true,
+          override: true,
+          userId: 'user-1',
+          req,
+          imageFiles: [attached],
+          findImageFiles: jest.fn().mockResolvedValue([]),
+          getStrategyFunctions: () => ({
+            getDownloadStream: jest.fn().mockResolvedValue(Readable.from([imageBytes])),
+          }),
+          ...fields,
+        });
+
+      it('sends the attached image to img2img, sized like the input', async () => {
+        const sd = makeImageTool();
+        const result = await sd.invoke(
+          makeToolCall('stable-diffusion', {
+            prompt: 'as a watercolor painting',
+            negative_prompt: '',
+            image_ids: ['img-1'],
+            denoising_strength: 0.4,
+          }),
+        );
+
+        expect(axios.post).toHaveBeenCalledWith(
+          'http://localhost:7860/sdapi/v1/img2img',
+          expect.objectContaining({
+            prompt: 'as a watercolor painting',
+            init_images: [imageBytes.toString('base64')],
+            denoising_strength: 0.4,
+            width: 1024,
+            height: 576,
+          }),
+          expect.any(Object),
+        );
+        expect(result.artifact?.content?.[0].type).toBe(ContentTypes.IMAGE_URL);
+      });
+
+      it("looks up an image that is not attached among the user's own files", async () => {
+        const findImageFiles = jest.fn().mockResolvedValue([{ ...attached, file_id: 'earlier' }]);
+        const sd = makeImageTool({ imageFiles: [], findImageFiles });
+        await sd.invoke(
+          makeToolCall('stable-diffusion', {
+            prompt: 'p',
+            negative_prompt: '',
+            image_ids: ['earlier'],
+          }),
+        );
+
+        expect(findImageFiles).toHaveBeenCalledWith('user-1', ['earlier']);
+        expect(axios.post.mock.calls[0][0]).toBe('http://localhost:7860/sdapi/v1/img2img');
+      });
+
+      it('reports an image it cannot load instead of generating from text', async () => {
+        const sd = makeImageTool();
+        const result = await sd.invoke(
+          makeToolCall('stable-diffusion', {
+            prompt: 'p',
+            negative_prompt: '',
+            image_ids: ['nope'],
+          }),
+        );
+
+        expect(axios.post).not.toHaveBeenCalled();
+        expect(result.content).toContain('could not be loaded');
+      });
+
+      it('reports image input as unavailable when storage access is not wired', async () => {
+        const sd = new StableDiffusionAPI({ isAgent: true, override: true, userId: 'user-1' });
+        const result = await sd.invoke(
+          makeToolCall('stable-diffusion', {
+            prompt: 'p',
+            negative_prompt: '',
+            image_ids: ['img-1'],
+          }),
+        );
+
+        expect(axios.post).not.toHaveBeenCalled();
+        expect(result.content).toContain('could not be loaded');
+      });
     });
 
     it('invoke() returns ToolMessage with error string in content when API fails', async () => {

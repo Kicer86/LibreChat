@@ -9,9 +9,11 @@ const { Tool } = require('@librechat/agents/langchain/tools');
 const { FileContext, ContentTypes } = require('librechat-data-provider');
 const {
   getBasePath,
+  loadImageInputs,
   stableDiffusionSchema,
   configuredRequestBudget,
   applySSRFSafeAgentIfDirect,
+  buildStableDiffusionRequest,
 } = require('@librechat/api');
 const paths = require('~/config/paths');
 
@@ -39,6 +41,14 @@ class StableDiffusionAPI extends Tool {
       /** @type {uploadImageBuffer} Necessary for output to contain all image metadata. */
       this.uploadImageBuffer = fields.uploadImageBuffer.bind(this);
     }
+    /** @type {MongoFile[]} Images attached to the request, usable as img2img input */
+    this.imageFiles = fields.imageFiles ?? [];
+    /** @type {string | undefined} */
+    this.fileStrategy = fields.fileStrategy;
+    /** Looks up the user's own image files by ID; required for img2img */
+    this.findImageFiles = fields.findImageFiles;
+    /** Storage strategy resolver; required for img2img */
+    this.getStrategyFunctions = fields.getStrategyFunctions;
 
     this.name = 'stable-diffusion';
     this.url = fields.SD_WEBUI_URL || this.getServerURL();
@@ -52,9 +62,10 @@ class StableDiffusionAPI extends Tool {
 // - Here's an example for generating a realistic portrait photo of a man:
 // "prompt":"photo of a man in black clothes, half body, high detailed skin, coastline, overcast weather, wind, waves, 8k uhd, dslr, soft lighting, high quality, film grain, Fujifilm XT3"
 // "negative_prompt":"semi-realistic, cgi, 3d, render, sketch, cartoon, drawing, anime, out of frame, low quality, ugly, mutation, deformed"
+// - To change an existing image instead (img2img), pass its ID in "image_ids" and optionally "denoising_strength" (0-1, how much it may change).
 // - Generate images only once per human query unless explicitly requested by the user`;
     this.description =
-      "You can generate images using text with 'stable-diffusion'. This tool is exclusively for visual content.";
+      "You can generate images using text with 'stable-diffusion', or change an existing image (img2img) by passing its ID in image_ids. This tool is exclusively for visual content.";
     this.schema = stableDiffusionSchema;
   }
 
@@ -92,20 +103,47 @@ class StableDiffusionAPI extends Tool {
     return url;
   }
 
+  /**
+   * Resolves the first requested image ID to image bytes for img2img.
+   * @returns {Promise<import('@librechat/api').ImageInput | undefined>}
+   */
+  async loadInputImage(image_ids) {
+    if (!this.findImageFiles || !this.getStrategyFunctions) {
+      return undefined;
+    }
+    const [image] = await loadImageInputs({
+      imageIds: image_ids.slice(0, 1),
+      requestFiles: this.imageFiles,
+      req: this.req,
+      fileStrategy: this.fileStrategy,
+      findImageFiles: this.findImageFiles,
+      getStrategyFunctions: this.getStrategyFunctions,
+      logPrefix: '[StableDiffusion]',
+    });
+    return image;
+  }
+
   async _call(data) {
     const url = this.url;
-    const { prompt, negative_prompt } = data;
-    const payload = {
+    const { prompt, negative_prompt, image_ids, denoising_strength } = data;
+    let inputImage;
+    if (image_ids?.length) {
+      inputImage = await this.loadInputImage(image_ids);
+      if (!inputImage) {
+        return this.returnValue(
+          'The image to change could not be loaded. Use the ID of an image attached to this request or generated earlier.',
+        );
+      }
+    }
+    const { path: apiPath, payload } = buildStableDiffusionRequest({
       prompt,
       negative_prompt,
-      cfg_scale: 4.5,
-      steps: 22,
-      width: 1024,
-      height: 1024,
-    };
+      image: inputImage,
+      denoising_strength,
+    });
     let generationResponse;
     try {
-      const requestUrl = `${url}/sdapi/v1/txt2img`;
+      const requestUrl = `${url}${apiPath}`;
       const requestConfig = {
         ...(this.isUserProvidedEndpoint ? applySSRFSafeAgentIfDirect({}, requestUrl) : {}),
         ...configuredRequestBudget(this.req?.config, 'imageGenerationMs'),

@@ -189,6 +189,19 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
       description:
         'Keywords we want to exclude from the final image, using at least 7 keywords to accurately describe the image, separated by comma',
     },
+    image_ids: {
+      type: 'array',
+      items: { type: 'string' },
+      description:
+        'To change an existing image (img2img) instead of creating one from text: the ID of an image attached to this request or generated earlier. Only the first ID is used. Omit to generate from text.',
+    },
+    denoising_strength: {
+      type: 'number',
+      minimum: 0,
+      maximum: 1,
+      description:
+        'Only with image_ids: how much the image may change, from 0 (keep it) to 1 (ignore it). Low values (0.3-0.5) restyle it, high values (0.6-0.8) reimagine it. Omit for the default.',
+    },
   },
   required: ['prompt', 'negative_prompt'],
 };
@@ -333,7 +346,7 @@ export const toolDefinitions: Record<string, ToolRegistryDefinition> = {
   'stable-diffusion': {
     name: 'stable-diffusion',
     description:
-      "You can generate images using text with 'stable-diffusion'. This tool is exclusively for visual content.",
+      "You can generate images using text with 'stable-diffusion', or change an existing image (img2img) by passing its ID in image_ids. This tool is exclusively for visual content.",
     schema: stableDiffusionSchema,
     toolType: 'builtin',
   },

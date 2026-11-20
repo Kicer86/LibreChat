@@ -25,6 +25,10 @@ jest.mock(
 );
 jest.mock('@librechat/api', () => ({
   applySSRFSafeAgentIfDirect: (...args) => mockApplySSRFSafeAgentIfDirect(...args),
+  buildStableDiffusionRequest: ({ prompt, negative_prompt }) => ({
+    path: '/sdapi/v1/txt2img',
+    payload: { prompt, negative_prompt },
+  }),
   getBasePath: jest.fn(),
 }));
 jest.mock('~/config/paths', () => ({}), { virtual: true });
