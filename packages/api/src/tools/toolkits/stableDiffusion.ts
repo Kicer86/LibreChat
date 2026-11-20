@@ -244,6 +244,11 @@ export type PreparedStableDiffusionRequest =
   | {
       url: string;
       payload: Record<string, unknown>;
+      /**
+       * The generation's HTTP config without its time budget, which `stableDiffusionGenerationConfig`
+       * starts when the request is sent, so waiting for the server lock or a model load does not
+       * use it up.
+       */
       config: AxiosRequestConfig;
       backend: StableDiffusionBackend;
       /** The input image, for img2img. */
@@ -282,9 +287,9 @@ async function loadInputImage(
 
 /**
  * Turns the tool's input into the generation request: loads the image to change (img2img),
- * detects the backend, and builds the payload and the HTTP config. The probe and the generation
- * get the `toolsMs` and `imageGenerationMs` budgets, and both go through the SSRF guard for a
- * user-provided URL, which throws for a blocked address.
+ * detects the backend, and builds the payload and the HTTP config. The probe gets the `toolsMs`
+ * budget; both it and the generation go through the SSRF guard for a user-provided URL, which
+ * throws for a blocked address.
  */
 export async function prepareStableDiffusionRequest(
   input: StableDiffusionToolInput,
@@ -316,11 +321,16 @@ export async function prepareStableDiffusionRequest(
     backend,
   });
   const url = `${context.url}${path}`;
-  const config = {
-    ...stableDiffusionRequestConfig(context, url, {}),
-    ...configuredRequestBudget(appConfig, 'imageGenerationMs'),
-  };
+  const config = stableDiffusionRequestConfig(context, url, {});
   return { url, payload, config, backend, ...(image && { image }) };
+}
+
+/** The prepared generation's config with an `imageGenerationMs` budget starting now. */
+export function stableDiffusionGenerationConfig(
+  config: AxiosRequestConfig,
+  appConfig: Pick<AppConfig, 'timeouts'> | null | undefined,
+): AxiosRequestConfig {
+  return { ...config, ...configuredRequestBudget(appConfig, 'imageGenerationMs') };
 }
 
 /** A Stable Diffusion WebUI API generation response (`images` base64, `info` JSON text). */
@@ -389,8 +399,16 @@ export async function generateStableDiffusionImage(
   if ('error' in request) {
     return request;
   }
+  const appConfig = context.req?.config;
+  /** Each generation, a retry included, gets its own budget from the moment it is sent. */
   const generate = async (payload = request.payload) =>
-    (await axios.post<StableDiffusionResponse>(request.url, payload, request.config)).data;
+    (
+      await axios.post<StableDiffusionResponse>(
+        request.url,
+        payload,
+        stableDiffusionGenerationConfig(request.config, appConfig),
+      )
+    ).data;
   /** img2img sized for the model that renders it. */
   const payloadFor = (model: SdcppModel) => {
     const file = request.image?.file;
@@ -411,7 +429,6 @@ export async function generateStableDiffusionImage(
     return { data: await generate() };
   }
 
-  const appConfig = context.req?.config;
   const lockParams = {
     lock: context.lock ?? processLock,
     url: context.url,

@@ -40,8 +40,23 @@ const generated = (file: string) => ({
   info: JSON.stringify({ generation_info: [{ models: { diffusion_model: file } }] }),
 });
 
+/** Answers after `ms`, failing like axios when the request's signal fired meanwhile. */
+async function after<T>(ms: number, config: { signal?: AbortSignal } | undefined, value: T) {
+  if (ms > 0) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  if (config?.signal?.aborted) {
+    throw new Error('canceled');
+  }
+  return value;
+}
+
 /** A fake sd-server; `loaded` is what models/status reports and models/load changes. */
-function serve(initial: { id: string; file: string }, generatedFiles?: string[]) {
+function serve(
+  initial: { id: string; file: string },
+  generatedFiles?: string[],
+  delays: { loadMs?: number; generateMs?: number } = {},
+) {
   let loaded = initial;
   const files = [...(generatedFiles ?? [])];
   mockGet.mockImplementation(async (requestUrl: string) => {
@@ -56,20 +71,26 @@ function serve(initial: { id: string; file: string }, generatedFiles?: string[])
     }
     return { status: 404, data: 'Not Found' };
   });
-  mockPost.mockImplementation(async (requestUrl: string, body: { recipe?: string }) => {
-    if (requestUrl.endsWith('/sdcpp/v1/models/load')) {
-      const next = recipes.find((candidate) => candidate.id === body.recipe);
-      loaded = { id: next!.id, file: next!.models.diffusion_model.split('/').pop()! };
-      return { status: 200, data: status(loaded.id, loaded.file) };
-    }
-    return { status: 200, data: generated(files.shift() ?? loaded.file) };
-  });
+  mockPost.mockImplementation(
+    async (requestUrl: string, body: { recipe?: string }, config?: { signal?: AbortSignal }) => {
+      if (requestUrl.endsWith('/sdcpp/v1/models/load')) {
+        const next = recipes.find((candidate) => candidate.id === body.recipe);
+        loaded = { id: next!.id, file: next!.models.diffusion_model.split('/').pop()! };
+        return after(delays.loadMs ?? 0, config, {
+          status: 200,
+          data: status(loaded.id, loaded.file),
+        });
+      }
+      const data = generated(files.shift() ?? loaded.file);
+      return after(delays.generateMs ?? 0, config, { status: 200, data });
+    },
+  );
 }
 
-const req = (models?: Record<string, unknown>) =>
+const req = (models?: Record<string, unknown>, timeouts?: Record<string, number>) =>
   ({
     user: { id: 'user-1' },
-    config: { stableDiffusion: models && { models } },
+    config: { stableDiffusion: models && { models }, timeouts },
   }) as unknown as ServerRequest;
 
 const loadCalls = () =>
@@ -130,6 +151,24 @@ describe('generateStableDiffusionImage', () => {
       context,
     );
     expect(img2img()).toMatchObject({ width: 768, height: 448 });
+  });
+
+  it('gives the generation its own budget after a slow model load', async () => {
+    serve({ id: 'qwen', file: 'qwen.gguf' }, undefined, { loadMs: 70, generateMs: 70 });
+    const result = await generateStableDiffusionImage(
+      { prompt: 'a cat', model: 'flux' },
+      { url, req: req(undefined, { imageGenerationMs: 110 }) },
+    );
+    expect(result).toEqual({ data: generated('flux.gguf'), model: 'flux' });
+  });
+
+  it('gives a retried generation its own budget', async () => {
+    serve({ id: 'qwen', file: 'qwen.gguf' }, ['other.gguf'], { generateMs: 70 });
+    const result = await generateStableDiffusionImage(
+      { prompt: 'a cat' },
+      { url, req: req(undefined, { imageGenerationMs: 110 }) },
+    );
+    expect(result).toEqual({ data: generated('qwen.gguf'), model: 'qwen' });
   });
 
   it('switches from a loaded video model to the default image model', async () => {

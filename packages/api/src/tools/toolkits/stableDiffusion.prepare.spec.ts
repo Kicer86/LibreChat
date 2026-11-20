@@ -39,7 +39,7 @@ describe('prepareStableDiffusionRequest', () => {
     expect(request).toEqual({
       url: `${url}/sdapi/v1/txt2img`,
       payload: { prompt: 'a cat', cfg_scale: 4.5, steps: 22 },
-      config: expect.objectContaining({ timeout: 5678 }),
+      config: {},
       backend: 'sdcpp',
     });
     expect(applySSRFSafeAgentIfDirect).not.toHaveBeenCalled();
@@ -57,7 +57,7 @@ describe('prepareStableDiffusionRequest', () => {
     );
     expect(applySSRFSafeAgentIfDirect).toHaveBeenCalledWith({}, `${url}/sdapi/v1/txt2img`);
     expect(mockGet.mock.calls[0][1]).toMatchObject({ guarded: true });
-    expect(request).toMatchObject({ config: { guarded: true, timeout: 5678 } });
+    expect(request).toMatchObject({ config: { guarded: true } });
   });
 
   it('changes an image generated earlier in the request', async () => {
