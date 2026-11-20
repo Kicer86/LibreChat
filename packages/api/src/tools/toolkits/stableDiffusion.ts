@@ -4,9 +4,10 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
 import type {
-  SdcppModelCheck,
-  SdcppModelStatus,
   SdcppCatalogLookup,
+  SdcppCapabilities,
+  SdcppModelStatus,
+  SdcppModelCheck,
   SdcppProbe,
   SdcppModel,
   SdcppPost,
@@ -28,6 +29,7 @@ import {
   formatSdcppModels,
   withSdcppServerLock,
   verifySdcppModel,
+  parseSdcppCapabilities,
 } from './sdcpp';
 import { configuredRequestBudget, getOutboundTimeoutMs } from '~/utils/timeouts';
 import { applySSRFSafeAgentIfDirect } from '~/auth/agent';
@@ -66,10 +68,19 @@ export type StableDiffusionBackend = 'sdcpp' | 'webui' | 'unknown';
 /** How long a detected backend is reused before the server is asked again. */
 const BACKEND_CACHE_TTL_MS = 5 * 60 * 1000;
 const BACKEND_CACHE_MAX_ENTRIES = 100;
-const backendCache = new Map<string, { backend: StableDiffusionBackend; expiresAt: number }>();
+const backendCache = new Map<string, { server: StableDiffusionServer; expiresAt: number }>();
 
 /** Fetches a URL, resolving with any HTTP status; rejects only when no response arrived. */
 export type StableDiffusionProbe = (url: string) => Promise<{ status: number; data: unknown }>;
+
+/** The detected backend, and for stable-diffusion.cpp what its generations accept. */
+export type StableDiffusionServer =
+  | { backend: 'sdcpp'; capabilities: SdcppCapabilities }
+  | { backend: 'webui' }
+  | { backend: 'unknown' };
+
+const WEBUI_SERVER: StableDiffusionServer = { backend: 'webui' };
+const UNKNOWN_SERVER: StableDiffusionServer = { backend: 'unknown' };
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   value != null && typeof value === 'object' && !Array.isArray(value);
@@ -79,7 +90,7 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
  * generation mode and carries the loaded model's default generation parameters. A proxy or
  * another server answering the route with arbitrary JSON (`{}`, `[]`, an error object) is not.
  */
-export function isStableDiffusionCppCapabilities(data: unknown): boolean {
+export function isStableDiffusionCppCapabilities(data: unknown): data is Record<string, unknown> {
   return (
     isPlainObject(data) &&
     typeof data.current_mode === 'string' &&
@@ -90,21 +101,22 @@ export function isStableDiffusionCppCapabilities(data: unknown): boolean {
 
 /**
  * Detects whether `url` is served by stable-diffusion.cpp, which answers
- * `/sdcpp/v1/capabilities`. A definite answer (the contract, or any other non-5xx response) is
- * cached per URL. When the probe fails (no response, or 5xx), the last answer for the URL is
- * kept even if it expired, so a brief outage of the probe route does not change a known
- * sd-server's generation parameters; the next call asks again. A URL never answered before is
- * `unknown`: it gets WebUI's fixed parameters, which work on every server, while omitting them on
- * a WebUI server would render with its SD 1.5-era defaults.
+ * `/sdcpp/v1/capabilities`, and reads its samplers, schedulers and limits from the same answer.
+ * A definite answer (the contract, or any other non-5xx response) is cached per URL. When the
+ * probe fails (no response, or 5xx), the last answer for the URL is kept even if it expired, so a
+ * brief outage of the probe route does not change a known sd-server's generation parameters; the
+ * next call asks again. A URL never answered before is `unknown`: it gets WebUI's fixed
+ * parameters, which work on every server, while omitting them on a WebUI server would render
+ * with its SD 1.5-era defaults.
  */
-export async function detectStableDiffusionBackend(
+export async function detectStableDiffusionServer(
   url: string,
   probe: StableDiffusionProbe,
   now: number = Date.now(),
-): Promise<StableDiffusionBackend> {
+): Promise<StableDiffusionServer> {
   const cached = backendCache.get(url);
   if (cached && cached.expiresAt > now) {
-    return cached.backend;
+    return cached.server;
   }
 
   let response: Awaited<ReturnType<StableDiffusionProbe>> | undefined;
@@ -114,16 +126,18 @@ export async function detectStableDiffusionBackend(
     response = undefined;
   }
   if (!response || response.status >= 500) {
-    return cached?.backend ?? 'unknown';
+    return cached?.server ?? UNKNOWN_SERVER;
   }
 
-  const backend: StableDiffusionBackend =
-    response.status === 200 && isStableDiffusionCppCapabilities(response.data) ? 'sdcpp' : 'webui';
+  const server: StableDiffusionServer =
+    response.status === 200 && isStableDiffusionCppCapabilities(response.data)
+      ? { backend: 'sdcpp', capabilities: parseSdcppCapabilities(response.data) }
+      : WEBUI_SERVER;
   if (!cached && backendCache.size >= BACKEND_CACHE_MAX_ENTRIES) {
     backendCache.clear();
   }
-  backendCache.set(url, { backend, expiresAt: now + BACKEND_CACHE_TTL_MS });
-  return backend;
+  backendCache.set(url, { server, expiresAt: now + BACKEND_CACHE_TTL_MS });
+  return server;
 }
 
 /** Forgets detected backends (for tests). */
@@ -316,7 +330,7 @@ export async function prepareStableDiffusionRequest(
   }
 
   const appConfig = context.req?.config;
-  const backend = await detectStableDiffusionBackend(context.url, (probeUrl) =>
+  const { backend } = await detectStableDiffusionServer(context.url, (probeUrl) =>
     axios.get(
       probeUrl,
       stableDiffusionRequestConfig(context, probeUrl, {

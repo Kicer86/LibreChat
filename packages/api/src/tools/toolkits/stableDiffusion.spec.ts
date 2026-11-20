@@ -4,7 +4,7 @@ import {
   sdcppSizeTarget,
   fitStableDiffusionSize,
   buildStableDiffusionRequest,
-  detectStableDiffusionBackend,
+  detectStableDiffusionServer,
   clearStableDiffusionBackendCache,
 } from './stableDiffusion';
 
@@ -106,9 +106,11 @@ describe('buildStableDiffusionRequest', () => {
   });
 });
 
-describe('detectStableDiffusionBackend', () => {
+describe('detectStableDiffusionServer', () => {
   const url = 'http://sd.local:7860';
   const probe = jest.fn();
+  const detectStableDiffusionBackend = async (...args: [string, typeof probe, number]) =>
+    (await detectStableDiffusionServer(...args)).backend;
 
   beforeEach(() => {
     clearStableDiffusionBackendCache();
@@ -121,6 +123,26 @@ describe('detectStableDiffusionBackend', () => {
     await expect(detectStableDiffusionBackend(url, probe, 1000)).resolves.toBe('sdcpp');
     expect(probe).toHaveBeenCalledTimes(1);
     expect(probe).toHaveBeenCalledWith(`${url}/sdcpp/v1/capabilities`);
+  });
+
+  it("keeps the server's samplers, schedulers and limits with the detected backend", async () => {
+    probe.mockResolvedValue({
+      status: 200,
+      data: {
+        ...capabilities,
+        samplers: ['euler', 'euler_a'],
+        schedulers: ['karras'],
+        limits: { min_width: 64, max_width: 4096, max_batch_count: 8 },
+      },
+    });
+    await expect(detectStableDiffusionServer(url, probe, 0)).resolves.toEqual({
+      backend: 'sdcpp',
+      capabilities: {
+        samplers: ['euler', 'euler_a'],
+        schedulers: ['karras'],
+        limits: { minWidth: 64, maxWidth: 4096, maxBatchCount: 8 },
+      },
+    });
   });
 
   it('treats a missing endpoint as another WebUI server and asks again after the TTL', async () => {
