@@ -5,6 +5,7 @@ import {
   STABLE_DIFFUSION_LOCK_LOST,
   generateStableDiffusionImage,
   STABLE_DIFFUSION_SERVER_BUSY,
+  STABLE_DIFFUSION_MODELS_UNAVAILABLE,
   clearStableDiffusionBackendCache,
   STABLE_DIFFUSION_MODEL_UNSUPPORTED,
 } from './stableDiffusion';
@@ -61,7 +62,7 @@ async function after<T>(ms: number, config: { signal?: AbortSignal } | undefined
 function serve(
   initial: { id: string; file: string; error?: string },
   generatedFiles?: string[],
-  delays: { loadMs?: number; generateMs?: number } = {},
+  delays: { loadMs?: number; generateMs?: number; recipesStatus?: number } = {},
 ) {
   let loaded = initial;
   const files = [...(generatedFiles ?? [])];
@@ -70,7 +71,8 @@ function serve(
       return { status: 200, data: { current_mode: 'img_gen', defaults: {} } };
     }
     if (requestUrl.endsWith('/sdcpp/v1/recipes')) {
-      return { status: 200, data: { recipes } };
+      const recipesStatus = delays.recipesStatus ?? 200;
+      return { status: recipesStatus, data: recipesStatus === 200 ? { recipes } : {} };
     }
     if (requestUrl.endsWith('/sdcpp/v1/models/status')) {
       if (loaded.id) {
@@ -287,13 +289,95 @@ describe('generateStableDiffusionImage', () => {
     });
   });
 
+  describe('when the model list cannot be read', () => {
+    const unreadable = (initial = { id: 'qwen', file: 'qwen.gguf' }) =>
+      serve(initial, undefined, { recipesStatus: 503 });
+    const spyLock = () => ({
+      acquire: jest.fn(async () => 'token'),
+      extend: jest.fn(async () => true),
+      release: jest.fn(async () => true),
+    });
+    const generations = () =>
+      mockPost.mock.calls.filter(([requestUrl]) => String(requestUrl).includes('/sdapi/'));
+
+    it.each([
+      ['no model is allowed', { include: [] }],
+      ['the loaded model is excluded', { exclude: ['qwen'] }],
+    ])('refuses to generate when %s', async (_case, models) => {
+      unreadable();
+      const result = await generateStableDiffusionImage(
+        { prompt: 'a cat' },
+        { url, req: req(models) },
+      );
+      expect(result).toEqual({ error: STABLE_DIFFUSION_MODELS_UNAVAILABLE });
+      expect(generations()).toHaveLength(0);
+    });
+
+    it('refuses a model loaded outside the catalog when models are restricted', async () => {
+      unreadable({ id: '', file: 'custom.gguf' });
+      const result = await generateStableDiffusionImage(
+        { prompt: 'a cat' },
+        { url, req: req({ include: ['qwen'] }) },
+      );
+      expect(result).toEqual({ error: STABLE_DIFFUSION_MODELS_UNAVAILABLE });
+      expect(generations()).toHaveLength(0);
+    });
+
+    it('generates with a loaded model the configuration allows, under the lock', async () => {
+      unreadable();
+      const lock = spyLock();
+      const result = await generateStableDiffusionImage(
+        { prompt: 'a cat' },
+        { url, req: req({ include: ['qwen'] }), lock },
+      );
+      expect(result).toEqual({ data: generated('qwen.gguf'), model: 'qwen' });
+      expect(lock.acquire).toHaveBeenCalled();
+    });
+
+    it('refuses an allowed result made by other files', async () => {
+      serve({ id: 'qwen', file: 'qwen.gguf' }, ['other.gguf'], { recipesStatus: 503 });
+      const result = await generateStableDiffusionImage(
+        { prompt: 'a cat' },
+        { url, req: req({ include: ['qwen'] }) },
+      );
+      expect(result).toEqual({ error: expect.stringContaining('"qwen" could not be loaded') });
+    });
+
+    it('generates with the loaded model under the lock without restrictions', async () => {
+      unreadable();
+      const lock = spyLock();
+      const result = await generateStableDiffusionImage(
+        { prompt: 'a cat' },
+        { url, req: req(), lock },
+      );
+      expect(result).toEqual({ data: generated('qwen.gguf') });
+      expect(lock.acquire).toHaveBeenCalled();
+    });
+
+    it('refuses a requested model', async () => {
+      unreadable();
+      await expect(
+        generateStableDiffusionImage({ prompt: 'a cat', model: 'qwen' }, { url, req: req() }),
+      ).resolves.toEqual({ error: STABLE_DIFFUSION_MODELS_UNAVAILABLE });
+    });
+
+    it('tells an sd.cpp server without a model list from one that cannot be read', async () => {
+      serve({ id: 'qwen', file: 'qwen.gguf' }, undefined, { recipesStatus: 404 });
+      await expect(
+        generateStableDiffusionImage({ prompt: 'a cat', model: 'qwen' }, { url, req: req() }),
+      ).resolves.toEqual({ error: STABLE_DIFFUSION_MODEL_UNSUPPORTED });
+    });
+  });
+
   it('sends the request as it is to a server without a model list', async () => {
     mockGet.mockResolvedValue({ status: 404, data: 'Not Found' });
     mockPost.mockResolvedValue({ status: 200, data: { images: ['x'] } });
+    const lock = { acquire: jest.fn(), extend: jest.fn(), release: jest.fn() };
     await expect(
-      generateStableDiffusionImage({ prompt: 'a cat' }, { url, req: req() }),
+      generateStableDiffusionImage({ prompt: 'a cat' }, { url, req: req({ include: [] }), lock }),
     ).resolves.toEqual({ data: { images: ['x'] } });
     expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(lock.acquire).not.toHaveBeenCalled();
 
     await expect(
       generateStableDiffusionImage({ prompt: 'a cat', model: 'flux' }, { url, req: req() }),

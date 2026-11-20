@@ -136,6 +136,10 @@ describe('getSdcppCatalog', () => {
       }
       return answer;
     });
+  const listed = (loaded: string) => ({
+    status: 'listed',
+    catalog: expect.objectContaining({ loaded }),
+  });
 
   beforeEach(() => {
     clearSdcppCatalogCache();
@@ -144,7 +148,9 @@ describe('getSdcppCatalog', () => {
 
   it('reads the models and the loaded one, then reuses the answer', async () => {
     respond({ status: 200, data: recipesResponse });
-    const catalog = await getSdcppCatalog(url, probe, 0);
+    const lookup = await getSdcppCatalog(url, probe, 0);
+    expect(lookup.status).toBe('listed');
+    const catalog = lookup.status === 'listed' ? lookup.catalog : undefined;
     expect(catalog?.loaded).toBe('local-qwen-image-21-q8');
     expect(catalog?.models.map((model) => model.id)).toEqual([
       'local-qwen-image-21-q8',
@@ -155,52 +161,52 @@ describe('getSdcppCatalog', () => {
     expect(probe).toHaveBeenCalledWith(`${url}/sdcpp/v1/models/status`);
 
     probe.mockClear();
-    await expect(getSdcppCatalog(url, probe, 1000)).resolves.toBe(catalog);
+    await expect(getSdcppCatalog(url, probe, 1000)).resolves.toEqual(lookup);
     expect(probe).not.toHaveBeenCalled();
   });
 
   it('caches that a server without the recipes route has no catalog', async () => {
     respond({ status: 404, data: 'Not Found' });
-    await expect(getSdcppCatalog(url, probe, 0)).resolves.toBeUndefined();
+    await expect(getSdcppCatalog(url, probe, 0)).resolves.toEqual({ status: 'unsupported' });
     probe.mockClear();
-    await expect(getSdcppCatalog(url, probe, 1000)).resolves.toBeUndefined();
+    await expect(getSdcppCatalog(url, probe, 1000)).resolves.toEqual({ status: 'unsupported' });
     expect(probe).not.toHaveBeenCalled();
   });
 
   it('keeps the last catalog when the server stops answering', async () => {
     respond({ status: 200, data: recipesResponse });
-    const catalog = await getSdcppCatalog(url, probe, 0);
+    const lookup = await getSdcppCatalog(url, probe, 0);
 
     respond(new Error('ECONNREFUSED'), new Error('ECONNREFUSED'));
-    await expect(getSdcppCatalog(url, probe, 10 * 60 * 1000)).resolves.toBe(catalog);
+    await expect(getSdcppCatalog(url, probe, 10 * 60 * 1000)).resolves.toEqual(lookup);
     respond({ status: 503, data: {} });
-    await expect(getSdcppCatalog(url, probe, 20 * 60 * 1000)).resolves.toBe(catalog);
+    await expect(getSdcppCatalog(url, probe, 20 * 60 * 1000)).resolves.toEqual(lookup);
   });
 
-  it('does not remember a server that has never answered', async () => {
+  it('reports a server that has never answered as unavailable, without remembering it', async () => {
     respond(new Error('ETIMEDOUT'), new Error('ETIMEDOUT'));
-    await expect(getSdcppCatalog(url, probe, 0)).resolves.toBeUndefined();
+    await expect(getSdcppCatalog(url, probe, 0)).resolves.toEqual({ status: 'unavailable' });
+    respond({ status: 503, data: {} });
+    await expect(getSdcppCatalog(url, probe, 1)).resolves.toEqual({ status: 'unavailable' });
     respond({ status: 200, data: recipesResponse });
-    await expect(getSdcppCatalog(url, probe, 1)).resolves.toMatchObject({
-      loaded: 'local-qwen-image-21-q8',
-    });
+    await expect(getSdcppCatalog(url, probe, 2)).resolves.toEqual(listed('local-qwen-image-21-q8'));
   });
 
   it('keeps the last known loaded model when only the status fails', async () => {
     respond({ status: 200, data: recipesResponse });
     await getSdcppCatalog(url, probe, 0);
     respond({ status: 200, data: recipesResponse }, new Error('ECONNRESET'));
-    await expect(getSdcppCatalog(url, probe, 10 * 60 * 1000)).resolves.toMatchObject({
-      loaded: 'local-qwen-image-21-q8',
-    });
+    await expect(getSdcppCatalog(url, probe, 10 * 60 * 1000)).resolves.toEqual(
+      listed('local-qwen-image-21-q8'),
+    );
   });
 
   it('names a model this process loaded', async () => {
     respond({ status: 200, data: recipesResponse });
     await getSdcppCatalog(url, probe, 0);
     noteSdcppModelLoaded(url, 'local-ltx25-distilled-q4');
-    await expect(getSdcppCatalog(url, probe, 1000)).resolves.toMatchObject({
-      loaded: 'local-ltx25-distilled-q4',
-    });
+    await expect(getSdcppCatalog(url, probe, 1000)).resolves.toEqual(
+      listed('local-ltx25-distilled-q4'),
+    );
   });
 });

@@ -18,11 +18,19 @@ export type SdcppModelChoice =
   | { ok: true; model?: SdcppModel }
   | { ok: false; error: SdcppModelChoiceError };
 
+/** Whether `librechat.yaml` (`stableDiffusion.models`) limits which models may be used. */
+export function restrictsSdcppModels(config?: SdcppModelsConfig): boolean {
+  return config?.include != null || (config?.exclude?.length ?? 0) > 0;
+}
+
+/** Whether `librechat.yaml` allows the model (recipe ID) `id`. */
+export function allowsSdcppModel(id: string, config?: SdcppModelsConfig): boolean {
+  return (!config?.include || config.include.includes(id)) && !config?.exclude?.includes(id);
+}
+
 /** The catalog's models that `librechat.yaml` (`stableDiffusion.models`) allows. */
 export function allowedSdcppModels(models: SdcppModel[], config?: SdcppModelsConfig): SdcppModel[] {
-  const include = config?.include ? new Set(config.include) : undefined;
-  const exclude = new Set(config?.exclude ?? []);
-  return models.filter((model) => (!include || include.has(model.id)) && !exclude.has(model.id));
+  return models.filter((model) => allowsSdcppModel(model.id, config));
 }
 
 export interface ChooseSdcppModelParams {
@@ -92,8 +100,7 @@ export function chooseSdcppModel({
   if (loaded && allowed.includes(loaded) && fits(loaded, withImage)) {
     return { ok: true, model: loaded };
   }
-  const restricted = config?.include != null || (config?.exclude?.length ?? 0) > 0;
-  if (!catalog.loaded && readyOutsideCatalog && !restricted) {
+  if (!catalog.loaded && readyOutsideCatalog && !restrictsSdcppModels(config)) {
     return { ok: true };
   }
 

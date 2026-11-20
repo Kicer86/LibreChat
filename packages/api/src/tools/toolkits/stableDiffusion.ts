@@ -13,7 +13,9 @@ import {
   chooseSdcppModel,
   SdcppLockError,
   SdcppModelError,
+  allowsSdcppModel,
   hasReadySdcppModel,
+  restrictsSdcppModels,
   noteSdcppModelLoaded,
   readSdcppModelStatus,
   formatSdcppModels,
@@ -357,6 +359,9 @@ export type StableDiffusionGeneration =
 /** Shown to the model when it names a model on a server that has no model list. */
 export const STABLE_DIFFUSION_MODEL_UNSUPPORTED =
   'This image server does not offer a choice of models. Omit "model".';
+/** Shown to the model when sd.cpp's model list cannot be read and models are restricted. */
+export const STABLE_DIFFUSION_MODELS_UNAVAILABLE =
+  "The image server's model list cannot be read right now, so no allowed model can be chosen. Try again later.";
 /** Shown to the model when the chosen model could not be loaded or kept loaded. */
 export const stableDiffusionModelFailed = (model: string) =>
   `The image model "${model}" could not be loaded. Try again later, or choose another model.`;
@@ -401,7 +406,8 @@ function sdcppClient(
  * Generates an image for the tool's input. On a stable-diffusion.cpp server that lists its
  * models, the model is chosen (`chooseSdcppModel`), loaded when it is not loaded yet, and checked
  * against the files the result names; a model switched by another client during the generation
- * is retried once. The load and the generation hold the server lock. Other servers get the
+ * is retried once. Every sd.cpp generation holds the server lock, also when the model list
+ * cannot be read; `librechat.yaml`'s model limits then still apply. Other servers get the
  * request as it is.
  */
 export async function generateStableDiffusionImage(
@@ -432,30 +438,72 @@ export async function generateStableDiffusionImage(
     return { ...request.payload, ...size };
   };
 
-  const client = sdcppClient(context);
-  const catalog =
-    request.backend === 'sdcpp' ? await getSdcppCatalog(context.url, client.probe) : undefined;
-  if (!catalog) {
+  if (request.backend !== 'sdcpp') {
     if (input.model) {
       return { error: STABLE_DIFFUSION_MODEL_UNSUPPORTED };
     }
     return { data: await generate() };
   }
 
+  const modelsConfig = appConfig?.stableDiffusion?.models;
+  const lookup = await getSdcppCatalog(context.url, sdcppClient(context).probe);
   const lockParams = {
     lock: context.lock ?? processLock,
     url: context.url,
     waitMs: getOutboundTimeoutMs(appConfig, 'imageGenerationMs'),
   };
+  /**
+   * Without a catalog no model can be chosen or loaded. The loaded one is used as it is, but when
+   * `librechat.yaml` restricts models only after the server confirms it is a ready, allowed one,
+   * and only if the result was made by its files.
+   */
+  const generateUnlisted = async (
+    status: 'unsupported' | 'unavailable',
+    signal: AbortSignal,
+  ): Promise<StableDiffusionGeneration> => {
+    const unavailable = { error: STABLE_DIFFUSION_MODELS_UNAVAILABLE };
+    if (input.model) {
+      return status === 'unsupported' ? { error: STABLE_DIFFUSION_MODEL_UNSUPPORTED } : unavailable;
+    }
+    if (!restrictsSdcppModels(modelsConfig)) {
+      return { data: await generate(request.payload, signal) };
+    }
+    let loaded: SdcppModelStatus;
+    try {
+      loaded = await readSdcppModelStatus(context.url, sdcppClient(context, signal).probe);
+    } catch (error) {
+      if (!(error instanceof SdcppModelError)) {
+        throw error;
+      }
+      return unavailable;
+    }
+    const { recipe } = loaded;
+    if (!recipe || !hasReadySdcppModel(loaded) || !allowsSdcppModel(recipe, modelsConfig)) {
+      return unavailable;
+    }
+    signal.throwIfAborted();
+    const data = await generate(request.payload, signal);
+    const mismatch = findSdcppModelMismatch(loaded, data.info);
+    if (mismatch) {
+      logger.warn(`[StableDiffusion] The model changed while ${recipe} generated (${mismatch})`);
+      return { error: stableDiffusionModelFailed(recipe) };
+    }
+    return { data, model: recipe };
+  };
+
   type Attempt = StableDiffusionGeneration | { switchedAway: string };
   /** One choose, load and generate pass; every request ends when the server lock is lost. */
-  const attempt = async (requested: string | undefined, signal: AbortSignal): Promise<Attempt> => {
+  const attempt = async (
+    models: SdcppModel[],
+    requested: string | undefined,
+    signal: AbortSignal,
+  ): Promise<Attempt> => {
     const locked = sdcppClient(context, signal);
     let status: SdcppModelStatus = await readSdcppModelStatus(context.url, locked.probe);
     noteSdcppModelLoaded(context.url, status.recipe);
     const choice = chooseSdcppModel({
-      catalog: { models: catalog.models, ...(status.recipe && { loaded: status.recipe }) },
-      config: appConfig?.stableDiffusion?.models,
+      catalog: { models, ...(status.recipe && { loaded: status.recipe }) },
+      config: modelsConfig,
       requested,
       withImage: request.image != null,
       readyOutsideCatalog: !status.recipe && hasReadySdcppModel(status),
@@ -493,12 +541,16 @@ export async function generateStableDiffusionImage(
 
   try {
     return await withSdcppServerLock(lockParams, async (signal) => {
-      const first = await attempt(input.model, signal);
+      if (lookup.status !== 'listed') {
+        return generateUnlisted(lookup.status, signal);
+      }
+      const { models } = lookup.catalog;
+      const first = await attempt(models, input.model, signal);
       if (!('switchedAway' in first)) {
         return first;
       }
       signal.throwIfAborted();
-      const second = await attempt(first.switchedAway, signal);
+      const second = await attempt(models, first.switchedAway, signal);
       return 'switchedAway' in second
         ? { error: stableDiffusionModelFailed(second.switchedAway) }
         : second;
@@ -552,6 +604,9 @@ export async function buildStableDiffusionToolContext({
       }),
     ),
   );
-  const models = catalog ? formatSdcppModels(catalog, appConfig?.stableDiffusion?.models) : '';
+  const models =
+    catalog.status === 'listed'
+      ? formatSdcppModels(catalog.catalog, appConfig?.stableDiffusion?.models)
+      : '';
   return [models, images].filter(Boolean).join('\n\n');
 }

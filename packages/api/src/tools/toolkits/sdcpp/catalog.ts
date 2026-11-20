@@ -26,6 +26,16 @@ export interface SdcppCatalog {
   loaded?: string;
 }
 
+/**
+ * What a server says about its models: a catalog (`listed`); no catalog, because it answered
+ * without one (`unsupported`: not sd.cpp, or a build without recipes); or nothing yet, because
+ * it has not answered and no earlier catalog is known (`unavailable`).
+ */
+export type SdcppCatalogLookup =
+  | { status: 'listed'; catalog: SdcppCatalog }
+  | { status: 'unsupported' }
+  | { status: 'unavailable' };
+
 /** What `/sdcpp/v1/models/status` reports about the loaded model. */
 export interface SdcppModelStatus {
   recipe?: string;
@@ -128,20 +138,22 @@ async function probeQuietly(probe: SdcppProbe, url: string) {
   }
 }
 
+const lookupOf = (catalog: SdcppCatalog | null): SdcppCatalogLookup =>
+  catalog ? { status: 'listed', catalog } : { status: 'unsupported' };
+
 /**
  * The models the stable-diffusion.cpp server at `url` can load, and which one is loaded.
  * The answer is cached per URL; when the server cannot be reached (no response, or 5xx) the last
- * catalog for the URL is kept even if it expired. `undefined` means the server has no catalog:
- * it is not sd.cpp, or it has never answered.
+ * answer for the URL is kept even if it expired, and without one the lookup is `unavailable`.
  */
 export async function getSdcppCatalog(
   url: string,
   probe: SdcppProbe,
   now: number = Date.now(),
-): Promise<SdcppCatalog | undefined> {
+): Promise<SdcppCatalogLookup> {
   const cached = catalogCache.get(url);
   if (cached && cached.expiresAt > now) {
-    return cached.catalog ?? undefined;
+    return lookupOf(cached.catalog);
   }
 
   const [recipes, status] = await Promise.all([
@@ -149,7 +161,7 @@ export async function getSdcppCatalog(
     probeQuietly(probe, `${url}/sdcpp/v1/models/status`),
   ]);
   if (!recipes || recipes.status >= 500) {
-    return cached?.catalog ?? undefined;
+    return cached ? lookupOf(cached.catalog) : { status: 'unavailable' };
   }
 
   const models = recipes.status === 200 ? parseSdcppRecipes(recipes.data) : undefined;
@@ -163,7 +175,7 @@ export async function getSdcppCatalog(
     catalogCache.clear();
   }
   catalogCache.set(url, { catalog, expiresAt: now + CATALOG_CACHE_TTL_MS });
-  return catalog ?? undefined;
+  return lookupOf(catalog);
 }
 
 /** Records the model loaded on the server at `url`, so the cached catalog names it. */
