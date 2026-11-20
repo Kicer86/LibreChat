@@ -4,7 +4,7 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
 import type { GeneratedImageRegistry, ImageInput, LoadImageInputsParams } from './images';
-import type { SdcppModelStatus, SdcppProbe, SdcppPost } from './sdcpp';
+import type { SdcppModelStatus, SdcppProbe, SdcppModel, SdcppPost } from './sdcpp';
 import type { DistributedLock } from '~/cache/lock';
 import type { ServerRequest } from '~/types';
 import {
@@ -136,19 +136,41 @@ export interface StableDiffusionRequest {
   payload: Record<string, unknown>;
 }
 
+/** The size img2img renders at: the longest side, and the multiple both sides round to. */
+export interface StableDiffusionSizeTarget {
+  longestSide: number;
+  multiple: number;
+}
+
+const DEFAULT_SIZE_TARGET: StableDiffusionSizeTarget = {
+  longestSide: IMAGE_SIZE,
+  multiple: SIZE_MULTIPLE,
+};
+
 /**
- * Scales an image's size so its longest side is `IMAGE_SIZE`, keeping the aspect ratio, with both
- * sides rounded to `SIZE_MULTIPLE`. img2img renders at this size, so the result keeps the shape of
- * the input instead of being squeezed into the txt2img square.
+ * Scales an image's size so its longest side is `target.longestSide`, keeping the aspect ratio,
+ * with both sides rounded to `target.multiple`. img2img renders at this size, so the result keeps
+ * the shape of the input instead of being squeezed into the txt2img square.
  */
 export function fitStableDiffusionSize(
   width: number,
   height: number,
+  { longestSide, multiple }: StableDiffusionSizeTarget = DEFAULT_SIZE_TARGET,
 ): { width: number; height: number } {
-  const scale = IMAGE_SIZE / Math.max(width, height);
+  const scale = longestSide / Math.max(width, height);
   const fit = (side: number) =>
-    Math.max(SIZE_MULTIPLE, Math.round((side * scale) / SIZE_MULTIPLE) * SIZE_MULTIPLE);
+    Math.max(multiple, Math.round((side * scale) / multiple) * multiple);
   return { width: fit(width), height: fit(height) };
+}
+
+/**
+ * The img2img size for a stable-diffusion.cpp model: its recipe's longest side (1024 when the
+ * recipe gives no size) and its size multiple, so the request suits models with other
+ * requirements than the WebUI defaults.
+ */
+export function sdcppSizeTarget(model: SdcppModel): StableDiffusionSizeTarget {
+  const recipeSide = Math.max(model.width ?? 0, model.height ?? 0);
+  return { longestSide: recipeSide > 0 ? recipeSide : IMAGE_SIZE, multiple: model.sizeMultiple };
 }
 
 /**
@@ -367,8 +389,17 @@ export async function generateStableDiffusionImage(
   if ('error' in request) {
     return request;
   }
-  const generate = async () =>
-    (await axios.post<StableDiffusionResponse>(request.url, request.payload, request.config)).data;
+  const generate = async (payload = request.payload) =>
+    (await axios.post<StableDiffusionResponse>(request.url, payload, request.config)).data;
+  /** img2img sized for the model that renders it. */
+  const payloadFor = (model: SdcppModel) => {
+    const file = request.image?.file;
+    if (!file?.width || !file.height) {
+      return request.payload;
+    }
+    const size = fitStableDiffusionSize(file.width, file.height, sdcppSizeTarget(model));
+    return { ...request.payload, ...size };
+  };
 
   const client = sdcppClient(context);
   const catalog =
@@ -415,7 +446,7 @@ export async function generateStableDiffusionImage(
     }
     noteSdcppModelLoaded(context.url, status.recipe);
 
-    const data = await generate();
+    const data = await generate(payloadFor(choice.model));
     const mismatch = findSdcppModelMismatch(status, data.info);
     if (mismatch) {
       logger.warn(`[StableDiffusion] The model changed while ${model} generated (${mismatch})`);

@@ -1,10 +1,12 @@
 import axios from 'axios';
+import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import {
   generateStableDiffusionImage,
   clearStableDiffusionBackendCache,
   STABLE_DIFFUSION_MODEL_UNSUPPORTED,
 } from './stableDiffusion';
+import { createGeneratedImageRegistry } from './images';
 import { clearSdcppCatalogCache } from './sdcpp';
 
 jest.mock('axios', () => ({ get: jest.fn(), post: jest.fn() }));
@@ -24,7 +26,7 @@ const recipe = (id: string, file: string, extra: Record<string, unknown> = {}) =
 });
 const recipes = [
   recipe('qwen', 'qwen.gguf'),
-  recipe('flux', 'flux.gguf'),
+  recipe('flux', 'flux.gguf', { defaults: { width: 768, height: 768 } }),
   recipe('ltx', 'ltx.gguf', { defaults: { video_frames: 33 } }),
 ];
 const status = (id: string, file: string) => ({
@@ -97,6 +99,37 @@ describe('generateStableDiffusionImage', () => {
     expect(loadCalls()).toEqual([
       [`${url}/sdcpp/v1/models/load`, { recipe: 'flux' }, expect.any(Object)],
     ]);
+  });
+
+  it('sizes img2img for the chosen model', async () => {
+    serve({ id: 'qwen', file: 'qwen.gguf' });
+    const findImageFiles = jest.fn(async () => [] as TFile[]);
+    const generatedImages = createGeneratedImageRegistry();
+    const request = req();
+    generatedImages.remember(request, {
+      file: { file_id: 'gen-1', width: 1600, height: 900 },
+      buffer: Buffer.from('generated'),
+      mimeType: 'image/png',
+    });
+    const context = {
+      url,
+      req: request,
+      generatedImages,
+      findImageFiles,
+      getStrategyFunctions: jest.fn(() => ({})),
+    };
+    const img2img = () =>
+      mockPost.mock.calls.find(([requestUrl]) => String(requestUrl).endsWith('/img2img'))?.[1];
+
+    await generateStableDiffusionImage({ prompt: 'red', image_ids: ['gen-1'] }, context);
+    expect(img2img()).toMatchObject({ width: 1024, height: 576 });
+
+    mockPost.mockClear();
+    await generateStableDiffusionImage(
+      { prompt: 'red', image_ids: ['gen-1'], model: 'flux' },
+      context,
+    );
+    expect(img2img()).toMatchObject({ width: 768, height: 448 });
   });
 
   it('switches from a loaded video model to the default image model', async () => {

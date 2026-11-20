@@ -1,6 +1,7 @@
 import type { TFile } from 'librechat-data-provider';
 import type { ImageInput } from './images';
 import {
+  sdcppSizeTarget,
   fitStableDiffusionSize,
   buildStableDiffusionRequest,
   detectStableDiffusionBackend,
@@ -23,6 +24,23 @@ describe('fitStableDiffusionSize', () => {
     [3000, 100, { width: 1024, height: 64 }],
   ])('fits %ix%i into 1024 keeping the aspect ratio', (width, height, expected) => {
     expect(fitStableDiffusionSize(width, height)).toEqual(expected);
+  });
+});
+
+describe('sdcppSizeTarget', () => {
+  const model = { id: 'm', name: 'm', mode: 'image' as const, acceptsImage: true };
+
+  it("fits img2img into the recipe's size and multiple", () => {
+    const target = sdcppSizeTarget({ ...model, sizeMultiple: 32, width: 768, height: 512 });
+    expect(target).toEqual({ longestSide: 768, multiple: 32 });
+    expect(fitStableDiffusionSize(1600, 900, target)).toEqual({ width: 768, height: 448 });
+  });
+
+  it('falls back to 1024 for a recipe without a size', () => {
+    expect(sdcppSizeTarget({ ...model, sizeMultiple: 16 })).toEqual({
+      longestSide: 1024,
+      multiple: 16,
+    });
   });
 });
 
