@@ -2,7 +2,7 @@ import { Readable } from 'stream';
 import { FileSources } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
-import { loadImageInputs } from './images';
+import { createGeneratedImageRegistry, loadImageInputs } from './images';
 
 const image = (file_id: string, extra: Partial<TFile> = {}): TFile =>
   ({
@@ -90,5 +90,50 @@ describe('loadImageInputs', () => {
     });
     expect(findImageFiles).not.toHaveBeenCalled();
     expect(result).toEqual([]);
+  });
+
+  it('uses images generated earlier in the same request before their files are saved', async () => {
+    const generatedImages = createGeneratedImageRegistry();
+    const generated = {
+      file: { file_id: 'fresh', width: 1024, height: 1024 },
+      buffer: Buffer.from('fresh-bytes'),
+      mimeType: 'image/png',
+    };
+    generatedImages.remember(req, generated);
+
+    const result = await loadImageInputs({
+      imageIds: ['fresh', 'a'],
+      requestFiles: [image('a', { source: FileSources.local })],
+      req,
+      findImageFiles,
+      getStrategyFunctions,
+      generatedImages,
+    });
+
+    expect(result).toEqual([generated, expect.objectContaining({ mimeType: 'image/png' })]);
+    expect(findImageFiles).not.toHaveBeenCalled();
+    expect(getDownloadStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps generated images to the request that made them', async () => {
+    const generatedImages = createGeneratedImageRegistry();
+    generatedImages.remember(req, {
+      file: { file_id: 'fresh' },
+      buffer: Buffer.from('fresh-bytes'),
+      mimeType: 'image/png',
+    });
+    const otherReq = { user: { id: 'user-2' } } as unknown as ServerRequest;
+
+    const result = await loadImageInputs({
+      imageIds: ['fresh'],
+      requestFiles: [],
+      req: otherReq,
+      findImageFiles,
+      getStrategyFunctions,
+      generatedImages,
+    });
+
+    expect(result).toEqual([]);
+    expect(findImageFiles).toHaveBeenCalledWith('user-2', ['fresh']);
   });
 });
