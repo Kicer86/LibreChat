@@ -14,6 +14,7 @@ const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
 const { ContentTypes } = require('librechat-data-provider');
 const { ToolMessage } = require('@librechat/agents/langchain/messages');
+const { clearStableDiffusionBackendCache } = require('@librechat/api');
 const StableDiffusionAPI = require('../StableDiffusion');
 const FluxAPI = require('../FluxAPI');
 
@@ -464,6 +465,8 @@ describe('image tools - agent mode ToolMessage format', () => {
 
   describe('StableDiffusion', () => {
     beforeEach(() => {
+      clearStableDiffusionBackendCache();
+      axios.get.mockResolvedValue({ status: 404, data: 'Not Found' });
       axios.post.mockResolvedValue({
         data: {
           images: [FAKE_BASE64],
@@ -511,6 +514,29 @@ describe('image tools - agent mode ToolMessage format', () => {
       expect(axios.post).toHaveBeenCalledWith(
         'http://localhost:7860/sdapi/v1/txt2img',
         expect.not.objectContaining({ init_images: expect.anything() }),
+        expect.any(Object),
+      );
+    });
+
+    it('sends fixed steps and CFG scale to a WebUI server', async () => {
+      const sd = new StableDiffusionAPI({ isAgent: true, override: true, userId: 'user-1' });
+      await sd.invoke(makeToolCall('stable-diffusion', { prompt: 'a box' }));
+
+      expect(axios.get).toHaveBeenCalledWith(
+        'http://localhost:7860/sdcpp/v1/capabilities',
+        expect.objectContaining({ timeout: expect.any(Number) }),
+      );
+      expect(axios.post.mock.calls[0][1]).toMatchObject({ steps: 22, cfg_scale: 4.5 });
+    });
+
+    it('leaves steps, CFG scale and size to stable-diffusion.cpp model defaults', async () => {
+      axios.get.mockResolvedValue({ status: 200, data: { current_mode: 'img_gen' } });
+      const sd = new StableDiffusionAPI({ isAgent: true, override: true, userId: 'user-1' });
+      await sd.invoke(makeToolCall('stable-diffusion', { prompt: 'a box' }));
+
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://localhost:7860/sdapi/v1/txt2img',
+        { prompt: 'a box' },
         expect.any(Object),
       );
     });

@@ -14,11 +14,15 @@ const {
   configuredRequestBudget,
   applySSRFSafeAgentIfDirect,
   buildStableDiffusionRequest,
+  detectStableDiffusionBackend,
 } = require('@librechat/api');
 const paths = require('~/config/paths');
 
 const displayMessage =
   "Stable Diffusion displayed an image. All generated images are already plainly visible, so don't repeat the descriptions in detail. Do not list download links as they are available in the UI already. The user may download the images by clicking on them, but do not mention anything about downloading to the user.";
+
+/** Detecting the backend is a quick GET; a slow server falls back to the WebUI defaults. */
+const BACKEND_PROBE_TIMEOUT_MS = 5000;
 
 class StableDiffusionAPI extends Tool {
   constructor(fields) {
@@ -123,6 +127,24 @@ class StableDiffusionAPI extends Tool {
     return image;
   }
 
+  /** Axios config for a request to `requestUrl`, SSRF-guarded when the user set the URL. */
+  getRequestConfig(requestUrl, config = {}) {
+    return this.isUserProvidedEndpoint ? applySSRFSafeAgentIfDirect(config, requestUrl) : config;
+  }
+
+  /** @returns {Promise<import('@librechat/api').StableDiffusionBackend>} */
+  detectBackend() {
+    return detectStableDiffusionBackend(this.url, (probeUrl) =>
+      axios.get(
+        probeUrl,
+        this.getRequestConfig(probeUrl, {
+          timeout: BACKEND_PROBE_TIMEOUT_MS,
+          validateStatus: () => true,
+        }),
+      ),
+    );
+  }
+
   async _call(data) {
     const url = this.url;
     const { prompt, negative_prompt, image_ids, denoising_strength } = data;
@@ -135,17 +157,18 @@ class StableDiffusionAPI extends Tool {
         );
       }
     }
-    const { path: apiPath, payload } = buildStableDiffusionRequest({
-      prompt,
-      negative_prompt,
-      image: inputImage,
-      denoising_strength,
-    });
     let generationResponse;
     try {
+      const { path: apiPath, payload } = buildStableDiffusionRequest({
+        prompt,
+        negative_prompt,
+        image: inputImage,
+        denoising_strength,
+        backend: await this.detectBackend(),
+      });
       const requestUrl = `${url}${apiPath}`;
       const requestConfig = {
-        ...(this.isUserProvidedEndpoint ? applySSRFSafeAgentIfDirect({}, requestUrl) : {}),
+        ...this.getRequestConfig(requestUrl),
         ...configuredRequestBudget(this.req?.config, 'imageGenerationMs'),
       };
       generationResponse = await axios.post(requestUrl, payload, requestConfig);
