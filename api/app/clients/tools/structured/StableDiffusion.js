@@ -184,13 +184,14 @@ class StableDiffusionAPI extends Tool {
           },
         ];
 
+        /** The saved image keeps this ID, so the model can pass it back in image_ids (img2img). */
         const response = [
           {
             type: ContentTypes.TEXT,
-            text: displayMessage,
+            text: `${displayMessage}\n\ngenerated_image_id: "${file_id}"`,
           },
         ];
-        return [response, { content }];
+        return [response, { content, file_ids: [file_id] }];
       }
 
       const buffer = Buffer.from(image.split(',', 1)[0], 'base64');

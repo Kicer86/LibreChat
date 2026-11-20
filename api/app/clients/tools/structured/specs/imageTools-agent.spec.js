@@ -515,6 +515,17 @@ describe('image tools - agent mode ToolMessage format', () => {
       );
     });
 
+    it('returns the ID the generated image is saved under, for later img2img', async () => {
+      const sd = new StableDiffusionAPI({ isAgent: true, override: true, userId: 'user-1' });
+      const result = await sd.invoke(
+        makeToolCall('stable-diffusion', { prompt: 'a box', negative_prompt: '' }),
+      );
+
+      const [fileId] = result.artifact.file_ids;
+      expect(fileId).toEqual(expect.any(String));
+      expect(JSON.stringify(result.content)).toContain(`generated_image_id: \\"${fileId}\\"`);
+    });
+
     describe('img2img', () => {
       const attached = {
         file_id: 'img-1',
