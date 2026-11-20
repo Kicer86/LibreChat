@@ -88,12 +88,25 @@ describe('chooseSdcppModel', () => {
     ).toEqual({ ok: true, model: qwen });
   });
 
-  it('leaves a model loaded outside the catalog alone unless models are restricted', () => {
-    expect(chooseSdcppModel({ catalog: catalog() })).toEqual({ ok: true });
-    expect(chooseSdcppModel({ catalog: catalog(), config: { include: ['flux'] } })).toEqual({
+  it('leaves a ready model loaded outside the catalog alone unless models are restricted', () => {
+    expect(chooseSdcppModel({ catalog: catalog(), readyOutsideCatalog: true })).toEqual({
       ok: true,
-      model: flux,
     });
+    expect(
+      chooseSdcppModel({
+        catalog: catalog(),
+        config: { include: ['flux'] },
+        readyOutsideCatalog: true,
+      }),
+    ).toEqual({ ok: true, model: flux });
+  });
+
+  it('loads a model when none is ready', () => {
+    expect(chooseSdcppModel({ catalog: catalog(), config: { defaultImage: 'qwen' } })).toEqual({
+      ok: true,
+      model: qwen,
+    });
+    expect(chooseSdcppModel({ catalog: catalog() })).toEqual({ ok: true, model: textOnly });
   });
 
   it('reports when no allowed model fits', () => {

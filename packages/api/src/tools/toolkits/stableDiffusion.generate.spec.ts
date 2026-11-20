@@ -51,9 +51,13 @@ async function after<T>(ms: number, config: { signal?: AbortSignal } | undefined
   return value;
 }
 
-/** A fake sd-server; `loaded` is what models/status reports and models/load changes. */
+/**
+ * A fake sd-server; `loaded` is what models/status reports and models/load changes. An empty
+ * `id` is a server with no recipe loaded: nothing at all without a `file`, else a model loaded
+ * from the command line.
+ */
 function serve(
-  initial: { id: string; file: string },
+  initial: { id: string; file: string; error?: string },
   generatedFiles?: string[],
   delays: { loadMs?: number; generateMs?: number } = {},
 ) {
@@ -67,7 +71,12 @@ function serve(
       return { status: 200, data: { recipes } };
     }
     if (requestUrl.endsWith('/sdcpp/v1/models/status')) {
-      return { status: 200, data: status(loaded.id, loaded.file) };
+      if (loaded.id) {
+        return { status: 200, data: status(loaded.id, loaded.file) };
+      }
+      const models = loaded.file ? { diffusion_model: loaded.file } : {};
+      const error = 'error' in loaded ? loaded.error : null;
+      return { status: 200, data: { recipe: null, state: 'ready', error, models } };
     }
     return { status: 404, data: 'Not Found' };
   });
@@ -169,6 +178,29 @@ describe('generateStableDiffusionImage', () => {
       { url, req: req(undefined, { imageGenerationMs: 110 }) },
     );
     expect(result).toEqual({ data: generated('qwen.gguf'), model: 'qwen' });
+  });
+
+  it.each([
+    ['no model loaded', { id: '', file: '' }],
+    ['a failed load', { id: '', file: 'qwen.gguf', error: 'out of memory' }],
+  ])('loads the default image model after %s', async (_case, initial) => {
+    serve(initial);
+    const result = await generateStableDiffusionImage(
+      { prompt: 'a cat' },
+      { url, req: req({ defaultImage: 'flux' }) },
+    );
+    expect(result).toEqual({ data: generated('flux.gguf'), model: 'flux' });
+    expect(loadCalls()).toHaveLength(1);
+  });
+
+  it('keeps a ready model loaded from the command line', async () => {
+    serve({ id: '', file: 'custom.gguf' });
+    const result = await generateStableDiffusionImage(
+      { prompt: 'a cat' },
+      { url, req: req({ defaultImage: 'flux' }) },
+    );
+    expect(result).toEqual({ data: generated('custom.gguf') });
+    expect(loadCalls()).toHaveLength(0);
   });
 
   it('switches from a loaded video model to the default image model', async () => {

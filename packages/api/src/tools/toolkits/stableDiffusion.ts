@@ -12,6 +12,7 @@ import {
   getSdcppCatalog,
   chooseSdcppModel,
   SdcppModelError,
+  hasReadySdcppModel,
   noteSdcppModelLoaded,
   readSdcppModelStatus,
   formatSdcppModels,
@@ -443,6 +444,7 @@ export async function generateStableDiffusionImage(
       config: appConfig?.stableDiffusion?.models,
       requested,
       withImage: request.image != null,
+      readyOutsideCatalog: !status.recipe && hasReadySdcppModel(status),
     });
     if (!choice.ok) {
       return { error: choice.error.message };

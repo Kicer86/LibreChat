@@ -11,7 +11,8 @@ export type SdcppModelChoiceError = {
 
 /**
  * The model to generate with. `model` is absent when the server's loaded model should be used
- * as it is: no catalog names it (a model loaded from the command line), and nothing excludes it.
+ * as it is: it is ready, no recipe names it (a model loaded from the command line), and
+ * `librechat.yaml` restricts no models.
  */
 export type SdcppModelChoice =
   | { ok: true; model?: SdcppModel }
@@ -31,6 +32,8 @@ export interface ChooseSdcppModelParams {
   requested?: string;
   /** Whether the request starts from an input image (img2img). */
   withImage?: boolean;
+  /** The server has a ready model that no recipe names, such as one loaded from the command line. */
+  readyOutsideCatalog?: boolean;
 }
 
 const fits = (model: SdcppModel, withImage: boolean) =>
@@ -39,13 +42,15 @@ const fits = (model: SdcppModel, withImage: boolean) =>
 /**
  * Chooses the image model for a request. A requested model must be allowed and able to serve the
  * request. Without one, the loaded model is kept when it can serve it, so no load is needed;
- * otherwise `defaultImage` is used, then the first allowed model that fits.
+ * otherwise, and when no model is ready at all, `defaultImage` is used, then the first allowed
+ * model that fits.
  */
 export function chooseSdcppModel({
   catalog,
   config,
   requested,
   withImage = false,
+  readyOutsideCatalog = false,
 }: ChooseSdcppModelParams): SdcppModelChoice {
   const allowed = allowedSdcppModels(catalog.models, config);
 
@@ -88,7 +93,7 @@ export function chooseSdcppModel({
     return { ok: true, model: loaded };
   }
   const restricted = config?.include != null || (config?.exclude?.length ?? 0) > 0;
-  if (!loaded && !catalog.loaded && !restricted) {
+  if (!catalog.loaded && readyOutsideCatalog && !restricted) {
     return { ok: true };
   }
 

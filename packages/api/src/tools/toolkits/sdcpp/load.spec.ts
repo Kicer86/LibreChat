@@ -1,5 +1,6 @@
 import {
   loadSdcppModel,
+  hasReadySdcppModel,
   SdcppModelError,
   readSdcppModelStatus,
   withSdcppServerLock,
@@ -27,6 +28,18 @@ describe('readSdcppModelStatus', () => {
   it('fails on an error status', async () => {
     const probe = jest.fn(async () => ({ status: 404, data: 'Not Found' }));
     await expect(readSdcppModelStatus(url, probe)).rejects.toBeInstanceOf(SdcppModelError);
+  });
+});
+
+describe('hasReadySdcppModel', () => {
+  it.each([
+    [qwenStatus, true],
+    [{ state: 'ready', models: { diffusion_model: 'model.gguf' } }, true],
+    [{ state: 'ready', models: {} }, false],
+    [{ state: 'loading', models: { diffusion_model: 'model.gguf' } }, false],
+    [{ error: 'out of memory', models: { diffusion_model: 'model.gguf' } }, false],
+  ])('tells whether %j can generate', (status, ready) => {
+    expect(hasReadySdcppModel(status)).toBe(ready);
   });
 });
 

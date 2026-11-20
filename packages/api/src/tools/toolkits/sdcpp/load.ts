@@ -27,6 +27,15 @@ export async function readSdcppModelStatus(
   return status;
 }
 
+/** Whether the server has a usable model loaded: ready, without a load error, naming its files. */
+export function hasReadySdcppModel(status: SdcppModelStatus): boolean {
+  return (
+    status.error == null &&
+    (status.state ?? 'ready') === 'ready' &&
+    Object.keys(status.models).length > 0
+  );
+}
+
 const isReady = (status: SdcppModelStatus, recipe: string) =>
   status.recipe === recipe && status.error == null && (status.state ?? 'ready') === 'ready';
 
