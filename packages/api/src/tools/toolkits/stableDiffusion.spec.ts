@@ -7,6 +7,8 @@ import {
   clearStableDiffusionBackendCache,
 } from './stableDiffusion';
 
+const capabilities = { current_mode: 'img_gen', defaults: { width: 1024, height: 1024 } };
+
 const input = (width?: number, height?: number): ImageInput => ({
   file: { file_id: 'img-1', width, height } as TFile,
   buffer: Buffer.from('png-bytes'),
@@ -91,7 +93,7 @@ describe('detectStableDiffusionBackend', () => {
   });
 
   it('detects stable-diffusion.cpp by its capabilities endpoint and caches the answer', async () => {
-    probe.mockResolvedValue({ status: 200, data: { current_mode: 'img_gen' } });
+    probe.mockResolvedValue({ status: 200, data: capabilities });
     await expect(detectStableDiffusionBackend(url, probe, 0)).resolves.toBe('sdcpp');
     await expect(detectStableDiffusionBackend(url, probe, 1000)).resolves.toBe('sdcpp');
     expect(probe).toHaveBeenCalledTimes(1);
@@ -108,12 +110,23 @@ describe('detectStableDiffusionBackend', () => {
   });
 
   it.each([
+    ['an empty object', {}],
+    ['an array', []],
+    ['an error object', { error: 'unknown route' }],
+    ['a mode without defaults', { current_mode: 'img_gen' }],
+    ['an empty mode', { current_mode: '', defaults: {} }],
+  ])('does not take %s answering with HTTP 200 for stable-diffusion.cpp', async (_case, data) => {
+    probe.mockResolvedValue({ status: 200, data });
+    await expect(detectStableDiffusionBackend(url, probe, 0)).resolves.toBe('webui');
+  });
+
+  it.each([
     ['an unreachable server', () => probe.mockRejectedValueOnce(new Error('ECONNREFUSED'))],
     ['a server error', () => probe.mockResolvedValueOnce({ status: 503, data: '' })],
   ])('falls back to webui without caching for %s', async (_case, fail) => {
     fail();
     await expect(detectStableDiffusionBackend(url, probe, 0)).resolves.toBe('webui');
-    probe.mockResolvedValueOnce({ status: 200, data: {} });
+    probe.mockResolvedValueOnce({ status: 200, data: capabilities });
     await expect(detectStableDiffusionBackend(url, probe, 1)).resolves.toBe('sdcpp');
   });
 });

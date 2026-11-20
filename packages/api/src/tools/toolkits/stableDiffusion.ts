@@ -27,6 +27,23 @@ const backendCache = new Map<string, { backend: StableDiffusionBackend; expiresA
 /** Fetches a URL, resolving with any HTTP status; rejects only when no response arrived. */
 export type StableDiffusionProbe = (url: string) => Promise<{ status: number; data: unknown }>;
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value != null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * Whether a `/sdcpp/v1/capabilities` response body is sd-server's: it names the current
+ * generation mode and carries the loaded model's default generation parameters. A proxy or
+ * another server answering the route with arbitrary JSON (`{}`, `[]`, an error object) is not.
+ */
+export function isStableDiffusionCppCapabilities(data: unknown): boolean {
+  return (
+    isPlainObject(data) &&
+    typeof data.current_mode === 'string' &&
+    data.current_mode.length > 0 &&
+    isPlainObject(data.defaults)
+  );
+}
+
 /**
  * Detects whether `url` is served by stable-diffusion.cpp, which answers
  * `/sdcpp/v1/capabilities`. A definite answer is cached per URL; when the server could not be
@@ -48,7 +65,7 @@ export async function detectStableDiffusionBackend(
     if (status >= 500) {
       return 'webui';
     }
-    backend = status === 200 && data != null && typeof data === 'object' ? 'sdcpp' : 'webui';
+    backend = status === 200 && isStableDiffusionCppCapabilities(data) ? 'sdcpp' : 'webui';
   } catch {
     return 'webui';
   }

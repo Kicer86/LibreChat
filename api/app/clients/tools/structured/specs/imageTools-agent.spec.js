@@ -530,7 +530,7 @@ describe('image tools - agent mode ToolMessage format', () => {
     });
 
     it('leaves steps, CFG scale and size to stable-diffusion.cpp model defaults', async () => {
-      axios.get.mockResolvedValue({ status: 200, data: { current_mode: 'img_gen' } });
+      axios.get.mockResolvedValue({ status: 200, data: { current_mode: 'img_gen', defaults: {} } });
       const sd = new StableDiffusionAPI({ isAgent: true, override: true, userId: 'user-1' });
       await sd.invoke(makeToolCall('stable-diffusion', { prompt: 'a box' }));
 
