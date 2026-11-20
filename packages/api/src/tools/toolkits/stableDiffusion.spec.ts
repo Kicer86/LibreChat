@@ -2,12 +2,11 @@ import type { TFile } from 'librechat-data-provider';
 import type { ImageInput } from './images';
 import {
   sdcppSizeTarget,
-  fitStableDiffusionSize,
-  resolveStableDiffusionSize,
   buildStableDiffusionRequest,
   detectStableDiffusionServer,
   clearStableDiffusionBackendCache,
 } from './stableDiffusion';
+import { fitStableDiffusionSize } from './stableDiffusionParams';
 
 const capabilities = { current_mode: 'img_gen', defaults: { width: 1024, height: 1024 } };
 
@@ -46,8 +45,11 @@ describe('sdcppSizeTarget', () => {
 });
 
 describe('buildStableDiffusionRequest', () => {
-  it('builds the unchanged txt2img request without an image', () => {
-    expect(buildStableDiffusionRequest({ prompt: 'a cat', negative_prompt: 'blur' })).toEqual({
+  it('builds a WebUI txt2img request with the WebUI CFG scale and the resolved settings', () => {
+    const settings = { width: 1024, height: 1024, steps: 22 };
+    expect(
+      buildStableDiffusionRequest({ prompt: 'a cat', negative_prompt: 'blur', settings }),
+    ).toEqual({
       path: '/sdapi/v1/txt2img',
       payload: {
         prompt: 'a cat',
@@ -60,12 +62,13 @@ describe('buildStableDiffusionRequest', () => {
     });
   });
 
-  it('builds an img2img request sized like the input image', () => {
+  it('builds an img2img request with the input image and denoising strength', () => {
     const { path, payload } = buildStableDiffusionRequest({
       prompt: 'as a watercolor',
       negative_prompt: '',
       image: input(1600, 900),
       denoising_strength: 0.4,
+      settings: { width: 1024, height: 576 },
     });
     expect(path).toBe('/sdapi/v1/img2img');
     expect(payload).toMatchObject({
@@ -77,40 +80,34 @@ describe('buildStableDiffusionRequest', () => {
     });
   });
 
-  it('leaves the denoising strength and unknown sizes to the server defaults', () => {
+  it('leaves the denoising strength to the server default', () => {
     const { payload } = buildStableDiffusionRequest({ prompt: 'x', image: input() });
     expect(payload).not.toHaveProperty('denoising_strength');
-    expect(payload).toMatchObject({ width: 1024, height: 1024 });
   });
 
-  it('leaves the txt2img size to the stable-diffusion.cpp recipe, with fixed steps and CFG scale', () => {
+  it('leaves CFG scale to the stable-diffusion.cpp model default', () => {
     expect(buildStableDiffusionRequest({ prompt: 'a cat', backend: 'sdcpp' })).toEqual({
       path: '/sdapi/v1/txt2img',
-      payload: { prompt: 'a cat', cfg_scale: 4.5, steps: 22 },
+      payload: { prompt: 'a cat' },
     });
   });
 
-  it('sends the WebUI txt2img size to a server not identified yet', () => {
+  it('sends the WebUI CFG scale to a server not identified yet', () => {
     expect(buildStableDiffusionRequest({ prompt: 'a cat', backend: 'unknown' })).toEqual({
       path: '/sdapi/v1/txt2img',
-      payload: { prompt: 'a cat', cfg_scale: 4.5, steps: 22, width: 1024, height: 1024 },
+      payload: { prompt: 'a cat', cfg_scale: 4.5 },
     });
   });
 
-  it('sends the settings asked for in place of the defaults', () => {
-    const params = { steps: 8, cfg_scale: 1, seed: 42, sampler_name: 'euler_a', width: 768 };
-    expect(buildStableDiffusionRequest({ prompt: 'a cat', params }).payload).toEqual({
-      prompt: 'a cat',
-      negative_prompt: undefined,
-      cfg_scale: 1,
-      steps: 8,
-      seed: 42,
-      sampler_name: 'euler_a',
-      width: 768,
-      height: 1024,
-    });
+  it('sends the resolved size and steps in place of those asked for', () => {
+    const params = { steps: 8, cfg_scale: 1, seed: 42, sampler_name: 'euler_a', width: 500 };
     expect(
-      buildStableDiffusionRequest({ prompt: 'a cat', backend: 'sdcpp', params }).payload,
+      buildStableDiffusionRequest({
+        prompt: 'a cat',
+        backend: 'sdcpp',
+        params,
+        settings: { width: 512, steps: 8 },
+      }).payload,
     ).toEqual({
       prompt: 'a cat',
       negative_prompt: undefined,
@@ -118,68 +115,8 @@ describe('buildStableDiffusionRequest', () => {
       steps: 8,
       seed: 42,
       sampler_name: 'euler_a',
-      width: 768,
-    });
-  });
-
-  it('still fits img2img to the input image on stable-diffusion.cpp', () => {
-    const { payload } = buildStableDiffusionRequest({
-      prompt: 'x',
-      image: input(900, 1600),
-      backend: 'sdcpp',
-    });
-    expect(payload).toMatchObject({ width: 576, height: 1024, cfg_scale: 4.5, steps: 22 });
-  });
-});
-
-describe('resolveStableDiffusionSize', () => {
-  const max = { width: 2048, height: 2048 };
-
-  it('rounds the sides asked for to the target multiple, within the largest size', () => {
-    const target = { longestSide: 1024, multiple: 32 };
-    expect(
-      resolveStableDiffusionSize({ backend: 'sdcpp', width: 500, height: 300, target }),
-    ).toEqual({ width: 512, height: 288 });
-    expect(
-      resolveStableDiffusionSize({
-        backend: 'sdcpp',
-        width: 1000,
-        target,
-        maxSize: { width: 1000, height: 1000 },
-      }),
-    ).toEqual({ width: 992 });
-  });
-
-  it('leaves the sides not asked for to the stable-diffusion.cpp recipe, unrounded without a model', () => {
-    expect(resolveStableDiffusionSize({ backend: 'sdcpp', height: 500 })).toEqual({ height: 500 });
-    expect(resolveStableDiffusionSize({ backend: 'sdcpp' })).toEqual({});
-  });
-
-  it('fills the other side with the WebUI default and rounds to 64', () => {
-    expect(resolveStableDiffusionSize({ backend: 'webui', width: 500 })).toEqual({
       width: 512,
-      height: 1024,
     });
-  });
-
-  it.each([
-    [{ width: 800 }, { width: 800, height: 448 }],
-    [{ height: 900 }, { width: 1600, height: 896 }],
-    [
-      { width: 640, height: 640 },
-      { width: 640, height: 640 },
-    ],
-    [{}, { width: 1024, height: 576 }],
-  ])('keeps the img2img input shape for %j', (asked, expected) => {
-    expect(
-      resolveStableDiffusionSize({
-        backend: 'sdcpp',
-        image: { width: 1600, height: 900 },
-        target: { longestSide: 1024, multiple: 32 },
-        maxSize: max,
-        ...asked,
-      }),
-    ).toEqual(expected);
   });
 });
 

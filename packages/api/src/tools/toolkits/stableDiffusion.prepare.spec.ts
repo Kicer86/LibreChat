@@ -38,10 +38,17 @@ describe('prepareStableDiffusionRequest', () => {
     );
     expect(request).toEqual({
       url: `${url}/sdapi/v1/txt2img`,
-      payload: { prompt: 'a cat', cfg_scale: 4.5, steps: 22 },
+      payload: { prompt: 'a cat' },
       config: {},
       backend: 'sdcpp',
-      sizing: { backend: 'sdcpp', maxSize: { width: 2048, height: 2048 } },
+      settings: {
+        backend: 'sdcpp',
+        bounds: {
+          width: { min: 64, max: 2048 },
+          height: { min: 64, max: 2048 },
+          maxSteps: 50,
+        },
+      },
     });
     expect(applySSRFSafeAgentIfDirect).not.toHaveBeenCalled();
   });
@@ -86,9 +93,8 @@ describe('prepareStableDiffusionRequest', () => {
       payload: {
         init_images: [buffer.toString('base64')],
         denoising_strength: 0.7,
-        width: 1024,
-        height: 576,
       },
+      settings: { image: { file_id: 'gen-1', width: 1600, height: 900 } },
     });
   });
 

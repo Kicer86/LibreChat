@@ -4,8 +4,11 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
 import type {
+  StableDiffusionSettingsRequest,
   StableDiffusionParamsInput,
-  StableDiffusionMaxSize,
+  StableDiffusionSizeTarget,
+  StableDiffusionSettings,
+  StableDiffusionDefaults,
   StableDiffusionParams,
 } from './stableDiffusionParams';
 import type {
@@ -35,33 +38,20 @@ import {
   withSdcppServerLock,
   verifySdcppModel,
   parseSdcppCapabilities,
+  parseSdcppDefaults,
 } from './sdcpp';
+import {
+  IMAGE_SIZE,
+  SIZE_MULTIPLE,
+  WEBUI_GENERATION_DEFAULTS,
+  checkStableDiffusionParams,
+  resolveStableDiffusionSettings,
+} from './stableDiffusionParams';
 import { configuredRequestBudget, getOutboundTimeoutMs } from '~/utils/timeouts';
-import { checkStableDiffusionParams } from './stableDiffusionParams';
 import { applySSRFSafeAgentIfDirect } from '~/auth/agent';
 import { buildImageToolContext } from './imageContext';
 import { createDistributedLock } from '~/cache/lock';
 import { loadImageInputs } from './images';
-
-/** Longest side of a generated image (txt2img renders a square of this size). */
-const IMAGE_SIZE = 1024;
-/** img2img dimensions are rounded to this multiple, which every common model accepts. */
-const SIZE_MULTIPLE = 64;
-
-/**
- * Sent to every server. sd-server renders omitted steps and CFG scale with its general defaults
- * (20 steps, CFG 1), not the loaded recipe's, which suits few models.
- */
-const GENERATION_DEFAULTS = {
-  cfg_scale: 4.5,
-  steps: 22,
-};
-
-/** The txt2img size for other WebUI servers, which fall back to SD 1.5-era 512² without it. */
-const WEBUI_IMAGE_SIZE = {
-  width: IMAGE_SIZE,
-  height: IMAGE_SIZE,
-};
 
 /**
  * The server behind `SD_WEBUI_URL`. stable-diffusion.cpp's `sd-server` renders an omitted txt2img
@@ -162,43 +152,14 @@ export interface StableDiffusionRequestParams {
   backend?: StableDiffusionBackend;
   /** Checked generation settings (`checkStableDiffusionParams`); each one given replaces a default. */
   params?: StableDiffusionParams;
-  /** The largest size allowed; a rounded size never exceeds it. */
-  maxSize?: StableDiffusionMaxSize;
-  /** The model's size target; without one, WebUI sizes round to 64 and sd.cpp's are sent as given. */
-  sizeTarget?: StableDiffusionSizeTarget;
+  /** The size and steps to send (`resolveStableDiffusionSettings`), in place of those in `params`. */
+  settings?: StableDiffusionSettings;
 }
 
 export interface StableDiffusionRequest {
   /** Path on the Stable Diffusion WebUI-compatible API (`/sdapi/v1/...`). */
   path: '/sdapi/v1/txt2img' | '/sdapi/v1/img2img';
   payload: Record<string, unknown>;
-}
-
-/** The size img2img renders at: the longest side, and the multiple both sides round to. */
-export interface StableDiffusionSizeTarget {
-  longestSide: number;
-  multiple: number;
-}
-
-const DEFAULT_SIZE_TARGET: StableDiffusionSizeTarget = {
-  longestSide: IMAGE_SIZE,
-  multiple: SIZE_MULTIPLE,
-};
-
-/**
- * Scales an image's size so its longest side is `target.longestSide`, keeping the aspect ratio,
- * with both sides rounded to `target.multiple`. img2img renders at this size, so the result keeps
- * the shape of the input instead of being squeezed into the txt2img square.
- */
-export function fitStableDiffusionSize(
-  width: number,
-  height: number,
-  { longestSide, multiple }: StableDiffusionSizeTarget = DEFAULT_SIZE_TARGET,
-): { width: number; height: number } {
-  const scale = longestSide / Math.max(width, height);
-  const fit = (side: number) =>
-    Math.max(multiple, Math.round((side * scale) / multiple) * multiple);
-  return { width: fit(width), height: fit(height) };
 }
 
 /**
@@ -211,73 +172,11 @@ export function sdcppSizeTarget(model: SdcppModel): StableDiffusionSizeTarget {
   return { longestSide: recipeSide > 0 ? recipeSide : IMAGE_SIZE, multiple: model.sizeMultiple };
 }
 
-/** The sizes a request asks for and the limits they are rounded within. */
-export interface StableDiffusionSizeParams {
-  backend: StableDiffusionBackend;
-  /** The img2img input's size, which keeps its aspect ratio. */
-  image?: { width?: number | null; height?: number | null };
-  /** Sides the calling model asked for. */
-  width?: number;
-  height?: number;
-  target?: StableDiffusionSizeTarget;
-  maxSize?: StableDiffusionMaxSize;
-}
-
-/**
- * The width and height a request renders at, each rounded to the target's multiple and kept
- * within `maxSize`:
- * - img2img keeps the input's aspect ratio: fitted to the target's longest side, or scaled to the
- *   one side asked for; both sides asked for replace it;
- * - txt2img renders the sides asked for; the others are the WebUI defaults (1024), and on
- *   stable-diffusion.cpp are left out so the loaded recipe's own size applies.
- *
- * Without a target, sizes round to 64 on WebUI servers and are sent unrounded to
- * stable-diffusion.cpp, which rounds them up to its model's multiple itself.
- */
-export function resolveStableDiffusionSize({
-  backend,
-  image,
-  width,
-  height,
-  target,
-  maxSize,
-}: StableDiffusionSizeParams): { width?: number; height?: number } {
-  const multiple = target?.multiple ?? (backend !== 'sdcpp' ? SIZE_MULTIPLE : 1);
-  const round = (side: number, max = Infinity) => {
-    const largest = Math.max(multiple, Math.floor(max / multiple) * multiple);
-    return Math.min(largest, Math.max(multiple, Math.round(side / multiple) * multiple));
-  };
-  const size = (w?: number, h?: number) => ({
-    ...(w != null && { width: round(w, maxSize?.width) }),
-    ...(h != null && { height: round(h, maxSize?.height) }),
-  });
-
-  const inputWidth = image?.width;
-  const inputHeight = image?.height;
-  if (inputWidth && inputHeight) {
-    if (width != null && height != null) {
-      return size(width, height);
-    }
-    if (width != null) {
-      return size(width, (width * inputHeight) / inputWidth);
-    }
-    if (height != null) {
-      return size((height * inputWidth) / inputHeight, height);
-    }
-    const fitted = fitStableDiffusionSize(inputWidth, inputHeight, target ?? DEFAULT_SIZE_TARGET);
-    return size(fitted.width, fitted.height);
-  }
-  if (backend !== 'sdcpp') {
-    return size(width ?? IMAGE_SIZE, height ?? IMAGE_SIZE);
-  }
-  return size(width, height);
-}
-
 /**
  * Builds a Stable Diffusion WebUI API request (`txt2img`, or `img2img` when an image is given).
  * The same API is served by AUTOMATIC1111, Forge and stable-diffusion.cpp's `sd-server`; for the
- * latter, the txt2img size is left to the loaded recipe. Settings the calling model gives are
- * sent as given.
+ * latter, CFG scale is left to the loaded model's default unless the calling model set it, and
+ * the size and steps are those `settings` gives.
  */
 export function buildStableDiffusionRequest({
   prompt,
@@ -286,26 +185,14 @@ export function buildStableDiffusionRequest({
   denoising_strength,
   backend = 'webui',
   params = {},
-  maxSize,
-  sizeTarget,
+  settings = {},
 }: StableDiffusionRequestParams): StableDiffusionRequest {
-  const { width, height, ...settings } = params;
-  const payload: Record<string, unknown> = { prompt, negative_prompt, ...GENERATION_DEFAULTS };
+  const { width: _width, height: _height, steps: _steps, ...rest } = params;
+  const payload: Record<string, unknown> = { prompt, negative_prompt };
   if (backend !== 'sdcpp') {
-    Object.assign(payload, WEBUI_IMAGE_SIZE);
+    payload.cfg_scale = WEBUI_GENERATION_DEFAULTS.cfg_scale;
   }
-  Object.assign(
-    payload,
-    settings,
-    resolveStableDiffusionSize({
-      backend,
-      image: image?.file,
-      width,
-      height,
-      target: sizeTarget,
-      maxSize,
-    }),
-  );
+  Object.assign(payload, rest, settings);
   if (!image) {
     return { path: '/sdapi/v1/txt2img', payload };
   }
@@ -369,8 +256,11 @@ export type PreparedStableDiffusionRequest =
       backend: StableDiffusionBackend;
       /** The input image, for img2img. */
       image?: ImageInput;
-      /** The sizes asked for; `payload`'s are rounded for no particular model. */
-      sizing: Omit<StableDiffusionSizeParams, 'target'>;
+      /**
+       * What the size and steps are resolved from. On stable-diffusion.cpp `payload` has neither:
+       * they depend on the model that renders it.
+       */
+      settings: StableDiffusionSettingsRequest;
     };
 
 /** Axios config for a request to `requestUrl`, SSRF-guarded when the user set the URL. */
@@ -406,9 +296,9 @@ async function loadInputImage(
 /**
  * Turns the tool's input into the generation request: loads the image to change (img2img),
  * detects the backend, checks the generation settings against the limits, and builds the payload
- * and the HTTP config. The probe gets the `toolsMs`
- * budget; both it and the generation go through the SSRF guard for a user-provided URL, which
- * throws for a blocked address.
+ * and the HTTP config. A WebUI payload is complete; a stable-diffusion.cpp one gets its size and
+ * steps once the model is known. The probe gets the `toolsMs` budget; both it and the generation
+ * go through the SSRF guard for a user-provided URL, which throws for a blocked address.
  */
 export async function prepareStableDiffusionRequest(
   input: StableDiffusionToolInput,
@@ -440,6 +330,22 @@ export async function prepareStableDiffusionRequest(
   if (!check.ok) {
     return { error: check.error.message };
   }
+  const settings: StableDiffusionSettingsRequest = {
+    backend,
+    image: image?.file,
+    width: check.value.width,
+    height: check.value.height,
+    steps: check.value.steps,
+    bounds: check.bounds,
+  };
+  let resolved: StableDiffusionSettings = {};
+  if (backend !== 'sdcpp') {
+    const result = resolveStableDiffusionSettings(settings);
+    if (!result.ok) {
+      return { error: result.error.message };
+    }
+    resolved = result.value;
+  }
   const { path, payload } = buildStableDiffusionRequest({
     prompt: input.prompt,
     negative_prompt: input.negative_prompt,
@@ -447,18 +353,11 @@ export async function prepareStableDiffusionRequest(
     denoising_strength: input.denoising_strength,
     backend,
     params: check.value,
-    maxSize: check.maxSize,
+    settings: resolved,
   });
   const url = `${context.url}${path}`;
   const config = stableDiffusionRequestConfig(context, url, {});
-  const sizing = {
-    backend,
-    image: image?.file,
-    width: check.value.width,
-    height: check.value.height,
-    maxSize: check.maxSize,
-  };
-  return { url, payload, config, backend, sizing, ...(image && { image }) };
+  return { url, payload, config, backend, settings, ...(image && { image }) };
 }
 
 /**
@@ -553,6 +452,28 @@ function sdcppClient(
 }
 
 /**
+ * The loaded model's default size and steps, from `/sdcpp/v1/capabilities`; empty when the server
+ * does not answer with them. A request stopped by `signal` still fails.
+ */
+async function readSdcppDefaults(
+  context: StableDiffusionToolContext,
+  signal: AbortSignal,
+): Promise<StableDiffusionDefaults> {
+  try {
+    const response = await sdcppClient(context, signal).probe(
+      `${context.url}/sdcpp/v1/capabilities`,
+    );
+    return response.status === 200 && isStableDiffusionCppCapabilities(response.data)
+      ? parseSdcppDefaults(response.data)
+      : {};
+  } catch (error) {
+    signal.throwIfAborted();
+    logger.warn("[StableDiffusion] Could not read the loaded model's defaults", error);
+    return {};
+  }
+}
+
+/**
  * Generates an image for the tool's input. On a stable-diffusion.cpp server that lists its
  * models, the model is chosen (`chooseSdcppModel`), loaded when it is not loaded yet, and checked
  * against the files the result names; a model switched by another client during the generation
@@ -578,14 +499,35 @@ export async function generateStableDiffusionImage(
         stableDiffusionGenerationConfig(request.config, appConfig, signal),
       )
     ).data;
-  /** The request sized for the model that renders it; unchanged for a model not in the catalog. */
-  const payloadFor = (model: SdcppModel | undefined) =>
-    model
-      ? {
-          ...request.payload,
-          ...resolveStableDiffusionSize({ ...request.sizing, target: sdcppSizeTarget(model) }),
-        }
-      : request.payload;
+  /**
+   * The request with the size and steps for the model that renders it, within the limits. Defaults
+   * the catalog does not give (a model outside it, or a recipe without them) are read from the
+   * server, which reports the loaded model's.
+   */
+  const payloadFor = async (
+    model: SdcppModel | undefined,
+    signal: AbortSignal,
+  ): Promise<{ payload: Record<string, unknown> } | { error: string }> => {
+    let defaults: StableDiffusionDefaults = {
+      ...(model?.width && { width: model.width }),
+      ...(model?.height && { height: model.height }),
+      ...(model?.steps && { steps: model.steps }),
+    };
+    if (defaults.width == null || defaults.height == null || defaults.steps == null) {
+      const loaded = await readSdcppDefaults(context, signal);
+      defaults = { ...loaded, ...defaults };
+    }
+    const longestSide = Math.max(defaults.width ?? 0, defaults.height ?? 0);
+    const target = model
+      ? sdcppSizeTarget(model)
+      : { longestSide: longestSide || IMAGE_SIZE, multiple: SIZE_MULTIPLE };
+    const result = resolveStableDiffusionSettings({ ...request.settings, defaults, target });
+    if (!result.ok) {
+      return { error: result.error.message };
+    }
+    signal.throwIfAborted();
+    return { payload: { ...request.payload, ...result.value } };
+  };
 
   if (request.backend === 'webui') {
     if (input.model) {
@@ -604,6 +546,11 @@ export async function generateStableDiffusionImage(
     url: context.url,
     waitMs: getOutboundTimeoutMs(appConfig, 'imageGenerationMs'),
   };
+  /** A server not identified yet gets the WebUI request prepared for it, already within the limits. */
+  const unlistedPayload = (signal: AbortSignal) =>
+    request.backend === 'sdcpp'
+      ? payloadFor(undefined, signal)
+      : Promise.resolve({ payload: request.payload });
   /**
    * Without a catalog no model can be chosen or loaded. The loaded one is used as it is, but when
    * `librechat.yaml` restricts models only after the server confirms it is a ready, allowed one,
@@ -618,7 +565,8 @@ export async function generateStableDiffusionImage(
       return status === 'unsupported' ? { error: STABLE_DIFFUSION_MODEL_UNSUPPORTED } : unavailable;
     }
     if (!restrictsSdcppModels(modelsConfig)) {
-      return { data: await generate(request.payload, signal) };
+      const sized = await unlistedPayload(signal);
+      return 'error' in sized ? sized : { data: await generate(sized.payload, signal) };
     }
     let loaded: SdcppModelStatus;
     try {
@@ -633,8 +581,11 @@ export async function generateStableDiffusionImage(
     if (!recipe || !hasReadySdcppModel(loaded) || !allowsSdcppModel(recipe, modelsConfig)) {
       return unavailable;
     }
-    signal.throwIfAborted();
-    const data = await generate(request.payload, signal);
+    const sized = await unlistedPayload(signal);
+    if ('error' in sized) {
+      return sized;
+    }
+    const data = await generate(sized.payload, signal);
     const check = verifySdcppModel(loaded, data.info);
     if (check.result === 'mismatch') {
       logger.warn(
@@ -668,7 +619,11 @@ export async function generateStableDiffusionImage(
     signal.throwIfAborted();
     if (!choice.model) {
       const loaded = models.find((candidate) => candidate.id === status.recipe);
-      const data = await generate(payloadFor(loaded), signal);
+      const sized = await payloadFor(loaded, signal);
+      if ('error' in sized) {
+        return sized;
+      }
+      const data = await generate(sized.payload, signal);
       return { data, ...(status.recipe && { model: status.recipe }) };
     }
 
@@ -685,7 +640,11 @@ export async function generateStableDiffusionImage(
     noteSdcppModelLoaded(context.url, status.recipe);
 
     signal.throwIfAborted();
-    const data = await generate(payloadFor(choice.model), signal);
+    const sized = await payloadFor(choice.model, signal);
+    if ('error' in sized) {
+      return sized;
+    }
+    const data = await generate(sized.payload, signal);
     const check = verifySdcppModel(status, data.info);
     if (check.result === 'mismatch') {
       logger.warn(`[StableDiffusion] The model changed while ${model} generated (${check.detail})`);

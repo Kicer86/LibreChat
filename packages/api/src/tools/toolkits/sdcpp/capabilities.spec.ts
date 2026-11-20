@@ -1,4 +1,4 @@
-import { parseSdcppCapabilities } from './capabilities';
+import { parseSdcppCapabilities, parseSdcppDefaults } from './capabilities';
 
 describe('parseSdcppCapabilities', () => {
   it('reads the samplers, schedulers and limits', () => {
@@ -31,5 +31,24 @@ describe('parseSdcppCapabilities', () => {
       }),
     ).toEqual({ samplers: [], schedulers: ['karras'], limits: {} });
     expect(parseSdcppCapabilities({})).toEqual({ samplers: [], schedulers: [], limits: {} });
+  });
+});
+
+describe('parseSdcppDefaults', () => {
+  it("reads the loaded model's default size and steps", () => {
+    expect(
+      parseSdcppDefaults({
+        defaults: {
+          width: 1024,
+          height: 768,
+          sample_params: { sample_steps: 20, scheduler: 'default' },
+        },
+      }),
+    ).toEqual({ width: 1024, height: 768, steps: 20 });
+  });
+
+  it('leaves out what is missing or malformed', () => {
+    expect(parseSdcppDefaults({ defaults: { width: 0, sample_params: [] } })).toEqual({});
+    expect(parseSdcppDefaults({})).toEqual({});
   });
 });

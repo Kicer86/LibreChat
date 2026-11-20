@@ -9,6 +9,7 @@ import {
   clearStableDiffusionBackendCache,
   STABLE_DIFFUSION_MODEL_UNSUPPORTED,
 } from './stableDiffusion';
+import { STABLE_DIFFUSION_DEFAULTS_UNKNOWN } from './stableDiffusionParams';
 import { createGeneratedImageRegistry } from './images';
 import { clearSdcppCatalogCache } from './sdcpp';
 
@@ -23,13 +24,13 @@ const recipe = (id: string, file: string, extra: Record<string, unknown> = {}) =
   name: id,
   models: { diffusion_model: `diffusion_models/${file}` },
   size_multiple: 32,
-  defaults: { width: 1024, height: 1024 },
+  defaults: { width: 1024, height: 1024, steps: 20 },
   effective_features: { img2img: true },
   ...extra,
 });
 const recipes = [
   recipe('qwen', 'qwen.gguf'),
-  recipe('flux', 'flux.gguf', { defaults: { width: 768, height: 768 } }),
+  recipe('flux', 'flux.gguf', { defaults: { width: 768, height: 768, steps: 20 } }),
   recipe('ltx', 'ltx.gguf', { defaults: { video_frames: 33 } }),
 ];
 const status = (id: string, file: string) => ({
@@ -72,7 +73,7 @@ function serve(
         status: 200,
         data: {
           current_mode: 'img_gen',
-          defaults: {},
+          defaults: { width: 1024, height: 1024, sample_params: { sample_steps: 20 } },
           samplers: ['euler', 'euler_a'],
           schedulers: ['karras', 'simple'],
           limits: { min_width: 64, max_width: 4096, min_height: 64, max_height: 4096 },
@@ -109,11 +110,24 @@ function serve(
   );
 }
 
-const req = (models?: Record<string, unknown>, timeouts?: Record<string, number>) =>
+const req = (
+  models?: Record<string, unknown>,
+  timeouts?: Record<string, number>,
+  limits?: Record<string, number>,
+) =>
   ({
     user: { id: 'user-1' },
-    config: { stableDiffusion: models && { models }, timeouts },
+    config: {
+      stableDiffusion: (models || limits) && {
+        ...(models && { models }),
+        ...(limits && { limits }),
+      },
+      timeouts,
+    },
   }) as unknown as ServerRequest;
+
+const sent = (path: string) =>
+  mockPost.mock.calls.find(([requestUrl]) => String(requestUrl).endsWith(path))?.[1];
 
 const loadCalls = () =>
   mockPost.mock.calls.filter(([requestUrl]) => String(requestUrl).endsWith('/models/load'));
@@ -198,7 +212,6 @@ describe('generateStableDiffusionImage', () => {
       negative_prompt: undefined,
       width: 512,
       steps: 8,
-      cfg_scale: 4.5,
       seed: 7,
       batch_size: 2,
       sampler_name: 'euler_a',
@@ -530,6 +543,59 @@ describe('generateStableDiffusionImage', () => {
         generateStableDiffusionImage({ prompt: 'a cat', model: 'qwen' }, { url, req: req() }),
       ).resolves.toEqual({ error: STABLE_DIFFUSION_MODELS_UNAVAILABLE });
       expect(generations()).toHaveLength(0);
+    });
+  });
+
+  describe('with settings left to the model', () => {
+    const lowered = { maxSize: 512, maxSteps: 10 };
+
+    it("lowers the WebUI defaults to librechat.yaml's limits", async () => {
+      mockGet.mockResolvedValue({ status: 404, data: 'Not Found' });
+      mockPost.mockResolvedValue({ status: 200, data: { images: ['x'] } });
+      await generateStableDiffusionImage(
+        { prompt: 'test' },
+        { url, req: req(undefined, undefined, lowered) },
+      );
+      expect(sent('/txt2img')).toMatchObject({ steps: 10, width: 512, height: 512 });
+    });
+
+    it("lowers a stable-diffusion.cpp recipe's defaults to the limits", async () => {
+      serve({ id: 'qwen', file: 'qwen.gguf' });
+      await generateStableDiffusionImage(
+        { prompt: 'test' },
+        { url, req: req(undefined, undefined, lowered) },
+      );
+      expect(sent('/txt2img')).toMatchObject({ steps: 10, width: 512, height: 512 });
+    });
+
+    it("leaves a recipe's defaults within the limits to the server", async () => {
+      serve({ id: 'qwen', file: 'qwen.gguf' });
+      await generateStableDiffusionImage({ prompt: 'test' }, { url, req: req() });
+      expect(sent('/txt2img')).toEqual({ prompt: 'test', negative_prompt: undefined });
+    });
+
+    it("lowers the loaded model's defaults when the model list cannot be read", async () => {
+      serve({ id: 'qwen', file: 'qwen.gguf' }, undefined, { recipesStatus: 503 });
+      await generateStableDiffusionImage(
+        { prompt: 'test' },
+        { url, req: req(undefined, undefined, lowered) },
+      );
+      expect(sent('/txt2img')).toMatchObject({ steps: 10, width: 512, height: 512 });
+    });
+
+    it('refuses to generate when the defaults cannot be read to check them', async () => {
+      serve({ id: 'qwen', file: 'qwen.gguf' }, undefined, { recipesStatus: 503 });
+      const server = mockGet.getMockImplementation()!;
+      let capabilityReads = 0;
+      mockGet.mockImplementation(async (requestUrl: string) =>
+        requestUrl.endsWith('/capabilities') && ++capabilityReads > 1
+          ? { status: 503, data: '' }
+          : server(requestUrl),
+      );
+      await expect(
+        generateStableDiffusionImage({ prompt: 'test' }, { url, req: req() }),
+      ).resolves.toEqual({ error: STABLE_DIFFUSION_DEFAULTS_UNKNOWN });
+      expect(sent('/txt2img')).toBeUndefined();
     });
   });
 

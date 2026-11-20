@@ -51,3 +51,17 @@ export function parseSdcppCapabilities(data: Record<string, unknown>): SdcppCapa
     },
   };
 }
+
+/** The loaded model's default size and steps in a `/sdcpp/v1/capabilities` response body. */
+export function parseSdcppDefaults(data: Record<string, unknown>): {
+  width?: number;
+  height?: number;
+  steps?: number;
+} {
+  const defaults = isPlainObject(data.defaults) ? data.defaults : {};
+  const sampleParams = isPlainObject(defaults.sample_params) ? defaults.sample_params : {};
+  const width = positiveInteger(defaults.width);
+  const height = positiveInteger(defaults.height);
+  const steps = positiveInteger(sampleParams.sample_steps);
+  return { ...(width && { width }), ...(height && { height }), ...(steps && { steps }) };
+}
