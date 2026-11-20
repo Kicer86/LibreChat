@@ -190,6 +190,65 @@ describe('runSdcppVideoJob', () => {
     expect(server.requests).toContain(`POST ${jobUrl}/cancel`);
   });
 
+  it('keeps waiting for a cancelled job through a passing read error', async () => {
+    const server = fakeServer([{ status: 'cancelled' }]);
+    const generating = async () => ({ status: 200, data: { status: 'generating' } });
+    server.probe
+      .mockImplementationOnce(generating)
+      .mockImplementationOnce(generating)
+      .mockImplementationOnce(async () => {
+        throw new Error('socket hang up');
+      });
+    const clock = fakeClock();
+    let settled = false;
+    const result = runSdcppVideoJob({
+      url,
+      body,
+      client: server.client,
+      cleanup: server.client,
+      signal: new AbortController().signal,
+      budgetMs: 1,
+      ...clock,
+    }).then((value) => {
+      settled = true;
+      return value;
+    });
+    await expect(result).resolves.toEqual({ status: 'timeout' });
+    expect(settled).toBe(true);
+    expect(server.probe).toHaveBeenCalledTimes(4);
+    expect(server.requests).toEqual([
+      `POST ${url}/sdcpp/v1/vid_gen`,
+      `POST ${jobUrl}/cancel`,
+      `GET ${jobUrl}`,
+    ]);
+  });
+
+  it('retries a cancel request that failed', async () => {
+    const server = fakeServer([
+      { status: 'generating' },
+      { status: 'generating' },
+      { status: 'cancelled' },
+    ]);
+    server.post
+      .mockImplementationOnce(async () => ({ status: 202, data: { id: 'job_1' } }))
+      .mockImplementationOnce(async () => {
+        throw new Error('ECONNRESET');
+      });
+    const result = await runSdcppVideoJob({
+      url,
+      body,
+      client: server.client,
+      cleanup: server.client,
+      signal: new AbortController().signal,
+      budgetMs: 1,
+      ...fakeClock(),
+    });
+    expect(result).toEqual({ status: 'timeout' });
+    expect(
+      server.post.mock.calls.filter(([requestUrl]) => requestUrl.endsWith('/cancel')),
+    ).toHaveLength(2);
+  });
+
   it('stops waiting for a cancelled job that never ends', async () => {
     const server = fakeServer([{ status: 'generating' }]);
     const clock = fakeClock();

@@ -110,30 +110,53 @@ function failureCode(job: Record<string, unknown>, status: string): string {
   return typeof error?.code === 'string' && error.code.length > 0 ? error.code : status;
 }
 
+/** Whether a cancelled job was seen to end, or still ran when waiting for it stopped. */
+export type SdcppCancelOutcome = 'ended' | 'unconfirmed';
+
+/** Whether a job answer says the job is over: a final state, or no such job any more. */
+function hasEnded(response: { status: number; data: unknown }): boolean {
+  if (response.status === 404 || response.status === 410) {
+    return true;
+  }
+  const status = isPlainObject(response.data) ? response.data.status : undefined;
+  return response.status === 200 && typeof status === 'string' && TERMINAL.has(status);
+}
+
 /**
- * Cancels a job and waits until sd-server reports it ended, within `CANCEL_SETTLE_MS`. Failures
- * are logged, not thrown: the caller is already ending with another outcome.
+ * Cancels a job and waits until sd-server reports it ended, within `CANCEL_SETTLE_MS`. A failed
+ * cancel request or state read is retried until then, so a passing network error does not free
+ * the server while the job still runs. Nothing is thrown: the caller is already ending with
+ * another outcome.
  */
 async function cancelJob(
   cleanup: SdcppJobClient,
   jobUrl: string,
   now: () => number,
   sleep: (ms: number) => Promise<void>,
-): Promise<void> {
-  try {
-    await cleanup.post(`${jobUrl}/cancel`, {});
-    const deadline = now() + CANCEL_SETTLE_MS;
-    while (now() < deadline) {
-      const { status } = await readJob(cleanup.probe, jobUrl);
-      if (TERMINAL.has(status)) {
-        return;
+): Promise<SdcppCancelOutcome> {
+  const deadline = now() + CANCEL_SETTLE_MS;
+  let requested = false;
+  while (now() < deadline) {
+    try {
+      if (!requested) {
+        const response = await cleanup.post(`${jobUrl}/cancel`, {});
+        if (response.status === 404) {
+          return 'ended';
+        }
+        requested = response.status >= 200 && response.status < 300;
       }
-      await sleep(POLL_MS);
+      if (requested && hasEnded(await cleanup.probe(jobUrl))) {
+        return 'ended';
+      }
+    } catch (error) {
+      logger.debug('[StableDiffusion] Cancelling a video job failed; retrying', error);
     }
-    logger.warn('[StableDiffusion] A cancelled video job is still running');
-  } catch (error) {
-    logger.warn('[StableDiffusion] Could not cancel a video job', error);
+    await sleep(POLL_MS);
   }
+  logger.warn(
+    `[StableDiffusion] A cancelled video job did not end within ${CANCEL_SETTLE_MS} ms; releasing the server`,
+  );
+  return 'unconfirmed';
 }
 
 /**
