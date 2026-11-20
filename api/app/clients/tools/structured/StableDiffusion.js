@@ -53,6 +53,8 @@ class StableDiffusionAPI extends Tool {
     this.findImageFiles = fields.findImageFiles;
     /** Storage strategy resolver; required for img2img */
     this.getStrategyFunctions = fields.getStrategyFunctions;
+    /** @type {import('@librechat/api').GeneratedImageRegistry | undefined} Images generated in this request, before their files are saved */
+    this.generatedImages = fields.generatedImages;
 
     this.name = 'stable-diffusion';
     this.url = fields.SD_WEBUI_URL || this.getServerURL();
@@ -122,6 +124,7 @@ class StableDiffusionAPI extends Tool {
       fileStrategy: this.fileStrategy,
       findImageFiles: this.findImageFiles,
       getStrategyFunctions: this.getStrategyFunctions,
+      generatedImages: this.generatedImages,
       logPrefix: '[StableDiffusion]',
     });
     return image;
@@ -208,6 +211,11 @@ class StableDiffusionAPI extends Tool {
         ];
 
         /** The saved image keeps this ID, so the model can pass it back in image_ids (img2img). */
+        this.generatedImages?.remember(this.req, {
+          file: { file_id, width: info.width, height: info.height },
+          buffer: Buffer.from(image, 'base64'),
+          mimeType: 'image/png',
+        });
         const response = [
           {
             type: ContentTypes.TEXT,

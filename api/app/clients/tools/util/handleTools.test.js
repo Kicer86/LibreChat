@@ -350,6 +350,7 @@ describe('Tool Handlers', () => {
       expect(sdTool.imageFiles).toEqual([attached]);
       expect(typeof sdTool.findImageFiles).toBe('function');
       expect(typeof sdTool.getStrategyFunctions).toBe('function');
+      expect(typeof sdTool.generatedImages?.find).toBe('function');
       expect(dynamicToolContextMap['stable-diffusion']).toContain('img-1');
       delete process.env.SD_WEBUI_URL;
     });

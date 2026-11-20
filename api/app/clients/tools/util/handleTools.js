@@ -33,6 +33,7 @@ const {
   resolveAgentCodeExecution,
   resolveMCPClientCapabilityProfile,
   setMissingCodeFilesContext,
+  createGeneratedImageRegistry,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -159,6 +160,9 @@ const findImageFiles = (userId, fileIds) =>
     {},
   );
 
+/** Images generated in a request, until the tool-end callback saves them as files. */
+const generatedImages = createGeneratedImageRegistry();
+
 const loadTools = async ({
   user,
   agent,
@@ -269,6 +273,7 @@ const loadTools = async ({
       ...imageGenOptions,
       imageFiles: options.tool_resources?.[EToolResources.image_edit]?.files ?? [],
       findImageFiles,
+      generatedImages,
       getStrategyFunctions,
     },
     gemini_image_gen: imageGenOptions,

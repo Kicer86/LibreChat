@@ -14,7 +14,10 @@ const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
 const { ContentTypes } = require('librechat-data-provider');
 const { ToolMessage } = require('@librechat/agents/langchain/messages');
-const { clearStableDiffusionBackendCache } = require('@librechat/api');
+const {
+  createGeneratedImageRegistry,
+  clearStableDiffusionBackendCache,
+} = require('@librechat/api');
 const StableDiffusionAPI = require('../StableDiffusion');
 const FluxAPI = require('../FluxAPI');
 
@@ -600,6 +603,47 @@ describe('image tools - agent mode ToolMessage format', () => {
           expect.any(Object),
         );
         expect(result.artifact?.content?.[0].type).toBe(ContentTypes.IMAGE_URL);
+      });
+
+      it('changes an image generated earlier in the same run before its file is saved', async () => {
+        /** Each tool call gets a new tool, as with event-driven tool execution; the request and
+         *  the registry are what the calls share. The saved file does not exist yet. */
+        const generatedImages = createGeneratedImageRegistry();
+        const findImageFiles = jest.fn().mockResolvedValue([]);
+        const generatedBytes = Buffer.from('freshly-generated');
+        axios.post.mockResolvedValueOnce({
+          data: {
+            images: [generatedBytes.toString('base64')],
+            info: JSON.stringify({ width: 1024, height: 1024, infotexts: [] }),
+          },
+        });
+
+        const first = await makeImageTool({
+          imageFiles: [],
+          findImageFiles,
+          generatedImages,
+        }).invoke(makeToolCall('stable-diffusion', { prompt: 'a box' }));
+        const [generatedId] = first.artifact.file_ids;
+
+        const second = await makeImageTool({
+          imageFiles: [],
+          findImageFiles,
+          generatedImages,
+        }).invoke(
+          makeToolCall('stable-diffusion', { prompt: 'a red box', image_ids: [generatedId] }),
+        );
+
+        expect(second.content).not.toContain('could not be loaded');
+        expect(findImageFiles).not.toHaveBeenCalled();
+        expect(axios.post).toHaveBeenLastCalledWith(
+          'http://localhost:7860/sdapi/v1/img2img',
+          expect.objectContaining({
+            init_images: [generatedBytes.toString('base64')],
+            width: 1024,
+            height: 1024,
+          }),
+          expect.any(Object),
+        );
       });
 
       it("looks up an image that is not attached among the user's own files", async () => {
