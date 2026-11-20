@@ -46,6 +46,8 @@ describe('checkStableDiffusionParams', () => {
         height: { min: 64, max: 2048 },
         maxSteps: 50,
       },
+      clip: {},
+      maxFrames: STABLE_DIFFUSION_LIMITS.maxFrames,
     });
   });
 
@@ -58,7 +60,20 @@ describe('checkStableDiffusionParams', () => {
         height: { min: 64, max: STABLE_DIFFUSION_LIMITS.maxSize },
         maxSteps: STABLE_DIFFUSION_LIMITS.maxSteps,
       },
+      clip: {},
+      maxFrames: STABLE_DIFFUSION_LIMITS.maxFrames,
     });
+  });
+
+  it('passes the clip settings on apart from the image settings', () => {
+    expect(checkStableDiffusionParams({ frames: 49, fps: 12 })).toMatchObject({
+      ok: true,
+      value: {},
+      clip: { frames: 49, fps: 12 },
+    });
+    expect(
+      checkStableDiffusionParams({ duration: 2.5 }, { limits: { maxFrames: 49 } }),
+    ).toMatchObject({ ok: true, clip: { duration: 2.5 }, maxFrames: 49 });
   });
 
   it("uses the server's spelling of a sampler or scheduler named in another case", () => {
@@ -106,6 +121,13 @@ describe('checkStableDiffusionParams', () => {
     [{ seed: -2 }, 'invalid_seed', '"seed"'],
     [{ seed: 2 ** 32 }, 'invalid_seed', '"seed"'],
     [{ seed: 1.5 }, 'invalid_seed', '"seed"'],
+    [{ frames: 0 }, 'invalid_frames', '"frames" must be a whole number from 1 to 121.'],
+    [{ frames: 122 }, 'invalid_frames', '"frames"'],
+    [{ frames: 9, duration: 1 }, 'invalid_frames', 'not both'],
+    [{ fps: 0 }, 'invalid_fps', '"fps" must be a whole number from 1 to 60.'],
+    [{ fps: 12.5 }, 'invalid_fps', '"fps"'],
+    [{ duration: 0 }, 'invalid_duration', '"duration"'],
+    [{ duration: Number.NaN }, 'invalid_duration', '"duration"'],
   ])('refuses %j', (input, code, message) => {
     const check = checkStableDiffusionParams(input, { capabilities });
     expect(check).toMatchObject({ ok: false, error: { code } });

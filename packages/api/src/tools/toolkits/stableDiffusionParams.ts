@@ -1,13 +1,23 @@
 import type { TStableDiffusionConfig } from 'librechat-data-provider';
-import type { SdcppCapabilities } from './sdcpp';
+import type { SdcppCapabilities, SdcppClipRequest } from './sdcpp';
 
-/** What one generation may ask for when `stableDiffusion.limits` in `librechat.yaml` is unset. */
-export const STABLE_DIFFUSION_LIMITS = { maxImages: 4, maxSteps: 50, maxSize: 2048 } as const;
+/**
+ * What one generation may ask for when `stableDiffusion.limits` in `librechat.yaml` is unset.
+ * `maxFrames` allows 5 seconds at 24 fps, the default clip of LTX 2.5 distilled.
+ */
+export const STABLE_DIFFUSION_LIMITS = {
+  maxImages: 4,
+  maxSteps: 50,
+  maxSize: 2048,
+  maxFrames: 121,
+} as const;
 
 /** Highest CFG scale accepted; WebUI servers offer the same range. */
 const MAX_CFG_SCALE = 30;
 /** Highest seed accepted; every server takes an unsigned 32-bit seed. */
 const MAX_SEED = 2 ** 32 - 1;
+/** Highest frame rate accepted for a video clip. */
+const MAX_FPS = 60;
 /** Smallest side of a generated image when the server states no minimum. */
 const MIN_SIZE = 64;
 /** Longest side of a generated image when the model states no size. */
@@ -44,6 +54,10 @@ export interface StableDiffusionParamsInput {
   scheduler?: string;
   /** How many images to make in one generation. */
   count?: number;
+  /** A video clip's length in frames, or in seconds (`duration`), and its frame rate. */
+  frames?: number;
+  duration?: number;
+  fps?: number;
 }
 
 /** Checked settings, named as the WebUI-compatible API takes them. */
@@ -67,7 +81,15 @@ export interface StableDiffusionBounds {
 }
 
 export type StableDiffusionParamsCheck =
-  | { ok: true; value: StableDiffusionParams; bounds: StableDiffusionBounds }
+  | {
+      ok: true;
+      value: StableDiffusionParams;
+      bounds: StableDiffusionBounds;
+      /** The clip settings asked for, checked against the limits but not yet against a model. */
+      clip: SdcppClipRequest;
+      /** Most frames a clip may have (`librechat.yaml`). */
+      maxFrames: number;
+    }
   | { ok: false; error: { code: StableDiffusionParamsErrorCode; message: string } };
 
 export type StableDiffusionParamsErrorCode =
@@ -76,6 +98,9 @@ export type StableDiffusionParamsErrorCode =
   | 'invalid_cfg_scale'
   | 'invalid_seed'
   | 'invalid_count'
+  | 'invalid_frames'
+  | 'invalid_duration'
+  | 'invalid_fps'
   | 'unknown_sampler'
   | 'unknown_scheduler'
   | 'size_out_of_range'
@@ -122,6 +147,7 @@ export function checkStableDiffusionParams(
   const maxSteps = limits?.maxSteps ?? STABLE_DIFFUSION_LIMITS.maxSteps;
   const maxImagesConfigured = limits?.maxImages ?? STABLE_DIFFUSION_LIMITS.maxImages;
   const maxImages = Math.min(maxImagesConfigured, server.maxBatchCount ?? maxImagesConfigured);
+  const maxFrames = limits?.maxFrames ?? STABLE_DIFFUSION_LIMITS.maxFrames;
   const max = {
     width: Math.min(maxSize, server.maxWidth ?? maxSize),
     height: Math.min(maxSize, server.maxHeight ?? maxSize),
@@ -180,6 +206,29 @@ export function checkStableDiffusionParams(
     value.batch_size = input.count;
   }
 
+  const clip: SdcppClipRequest = {};
+  if (input.frames != null && input.duration != null) {
+    return failure('invalid_frames', 'Give either "frames" or "duration", not both.');
+  }
+  if (input.frames != null) {
+    if (!isWholeNumber(input.frames, 1, maxFrames)) {
+      return failure('invalid_frames', `"frames" must be a whole number from 1 to ${maxFrames}.`);
+    }
+    clip.frames = input.frames;
+  }
+  if (input.fps != null) {
+    if (!isWholeNumber(input.fps, 1, MAX_FPS)) {
+      return failure('invalid_fps', `"fps" must be a whole number from 1 to ${MAX_FPS}.`);
+    }
+    clip.fps = input.fps;
+  }
+  if (input.duration != null) {
+    if (!Number.isFinite(input.duration) || input.duration <= 0) {
+      return failure('invalid_duration', '"duration" must be a number of seconds above 0.');
+    }
+    clip.duration = input.duration;
+  }
+
   const lists = [
     ['sampler', 'sampler_name', capabilities?.samplers, 'unknown_sampler'],
     ['scheduler', 'scheduler', capabilities?.schedulers, 'unknown_scheduler'],
@@ -203,7 +252,7 @@ export function checkStableDiffusionParams(
     value[key] = match;
   }
 
-  return { ok: true, value, bounds };
+  return { ok: true, value, bounds, clip, maxFrames };
 }
 
 /** The size img2img renders at: the longest side, and the multiple both sides round to. */

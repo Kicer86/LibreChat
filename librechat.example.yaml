@@ -627,7 +627,8 @@ registration:
 #   limits:
 #     maxImages: 4 # images one call may make
 #     maxSteps: 50 # sampling steps per image
-#     maxSize: 2048 # longest side of an image, in pixels
+#     maxSize: 2048 # longest side of an image or video, in pixels
+#     maxFrames: 121 # frames of one video clip (5 s at 24 fps)
 
 # Newest violations kept per user in the general violation log.
 # violationLog:

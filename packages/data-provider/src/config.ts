@@ -3122,8 +3122,10 @@ export const stableDiffusionConfigSchema = z
         maxImages: z.number().int().min(1).optional(),
         /** Sampling steps one image may take. */
         maxSteps: z.number().int().min(1).optional(),
-        /** Longest side, in pixels, of a generated image. */
+        /** Longest side, in pixels, of a generated image or video. */
         maxSize: z.number().int().min(64).optional(),
+        /** Frames one video clip may have. */
+        maxFrames: z.number().int().min(1).optional(),
       })
       .strict()
       .optional(),
