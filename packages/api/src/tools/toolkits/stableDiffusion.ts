@@ -3,8 +3,8 @@ import { logger } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
+import type { SdcppModelCheck, SdcppModelStatus, SdcppProbe, SdcppModel, SdcppPost } from './sdcpp';
 import type { GeneratedImageRegistry, ImageInput, LoadImageInputsParams } from './images';
-import type { SdcppModelStatus, SdcppProbe, SdcppModel, SdcppPost } from './sdcpp';
 import type { DistributedLock } from '~/cache/lock';
 import type { ServerRequest } from '~/types';
 import {
@@ -20,7 +20,7 @@ import {
   readSdcppModelStatus,
   formatSdcppModels,
   withSdcppServerLock,
-  findSdcppModelMismatch,
+  verifySdcppModel,
 } from './sdcpp';
 import { configuredRequestBudget, getOutboundTimeoutMs } from '~/utils/timeouts';
 import { applySSRFSafeAgentIfDirect } from '~/auth/agent';
@@ -372,6 +372,24 @@ export const STABLE_DIFFUSION_SERVER_BUSY =
 export const STABLE_DIFFUSION_LOCK_LOST =
   'The image generation was stopped because another request may be using the image server. Try again.';
 
+/**
+ * A generation named by `model` only when its files confirm it. A result that names no files is
+ * kept, since the lock makes another model unlikely, but it is not attributed to a model.
+ */
+function withCheckedModel(
+  data: StableDiffusionResponse,
+  model: string,
+  check: SdcppModelCheck,
+): StableDiffusionGeneration {
+  if (check.result === 'match') {
+    return { data, model };
+  }
+  logger.warn(
+    `[StableDiffusion] Could not tell which model generated the image (${model} expected)`,
+  );
+  return { data };
+}
+
 /** Used when the caller passes no lock; it coordinates only this process's generations. */
 const processLock = createDistributedLock();
 
@@ -483,12 +501,14 @@ export async function generateStableDiffusionImage(
     }
     signal.throwIfAborted();
     const data = await generate(request.payload, signal);
-    const mismatch = findSdcppModelMismatch(loaded, data.info);
-    if (mismatch) {
-      logger.warn(`[StableDiffusion] The model changed while ${recipe} generated (${mismatch})`);
+    const check = verifySdcppModel(loaded, data.info);
+    if (check.result === 'mismatch') {
+      logger.warn(
+        `[StableDiffusion] The model changed while ${recipe} generated (${check.detail})`,
+      );
       return { error: stableDiffusionModelFailed(recipe) };
     }
-    return { data, model: recipe };
+    return withCheckedModel(data, recipe, check);
   };
 
   type Attempt = StableDiffusionGeneration | { switchedAway: string };
@@ -531,12 +551,12 @@ export async function generateStableDiffusionImage(
 
     signal.throwIfAborted();
     const data = await generate(payloadFor(choice.model), signal);
-    const mismatch = findSdcppModelMismatch(status, data.info);
-    if (mismatch) {
-      logger.warn(`[StableDiffusion] The model changed while ${model} generated (${mismatch})`);
+    const check = verifySdcppModel(status, data.info);
+    if (check.result === 'mismatch') {
+      logger.warn(`[StableDiffusion] The model changed while ${model} generated (${check.detail})`);
       return { switchedAway: model };
     }
-    return { data, model };
+    return withCheckedModel(data, model, check);
   };
 
   try {

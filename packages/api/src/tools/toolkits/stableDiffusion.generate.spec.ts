@@ -289,6 +289,19 @@ describe('generateStableDiffusionImage', () => {
     });
   });
 
+  it('keeps a result that names no model files without attributing it to a model', async () => {
+    serve({ id: 'qwen', file: 'qwen.gguf' });
+    const plain = { images: ['aW1hZ2U='], info: JSON.stringify({ seed: 1 }) };
+    mockPost.mockImplementation(async (requestUrl: string) =>
+      String(requestUrl).endsWith('/models/load')
+        ? { status: 200, data: status('flux', 'flux.gguf') }
+        : { status: 200, data: plain },
+    );
+    await expect(
+      generateStableDiffusionImage({ prompt: 'a cat', model: 'flux' }, { url, req: req() }),
+    ).resolves.toEqual({ data: plain });
+  });
+
   describe('when the model list cannot be read', () => {
     const unreadable = (initial = { id: 'qwen', file: 'qwen.gguf' }) =>
       serve(initial, undefined, { recipesStatus: 503 });

@@ -5,7 +5,7 @@ import {
   SdcppModelError,
   readSdcppModelStatus,
   withSdcppServerLock,
-  findSdcppModelMismatch,
+  verifySdcppModel,
 } from './load';
 import { createDistributedLock } from '~/cache/lock';
 
@@ -71,13 +71,13 @@ describe('loadSdcppModel', () => {
   });
 });
 
-describe('findSdcppModelMismatch', () => {
+describe('verifySdcppModel', () => {
   const info = (models: Record<string, string>) =>
     JSON.stringify({ generation_info: [{ kind: 'image', models }] });
 
   it('matches the files by name', () => {
     expect(
-      findSdcppModelMismatch(
+      verifySdcppModel(
         qwenStatus,
         info({
           diffusion_model: 'qwen-image-2.1-Q8_0.gguf',
@@ -85,25 +85,37 @@ describe('findSdcppModelMismatch', () => {
           llm: 'Qwen3VL-8B-Instruct-Q8_0.gguf',
         }),
       ),
-    ).toBeUndefined();
+    ).toEqual({ result: 'match' });
   });
 
   it('names the slots that used other files', () => {
     expect(
-      findSdcppModelMismatch(
+      verifySdcppModel(
         qwenStatus,
         info({
           diffusion_model: 'qwen-image-2.1-Q6_K.gguf',
           vae: 'qwen-image-2.1-vae.safetensors',
         }),
       ),
-    ).toBe('diffusion_model: expected qwen-image-2.1-Q8_0.gguf, got qwen-image-2.1-Q6_K.gguf');
+    ).toEqual({
+      result: 'mismatch',
+      detail: 'diffusion_model: expected qwen-image-2.1-Q8_0.gguf, got qwen-image-2.1-Q6_K.gguf',
+    });
+  });
+
+  it('cannot tell when the result names none of the expected slots', () => {
+    expect(verifySdcppModel(qwenStatus, info({ llm: 'Qwen3VL-8B-Instruct-Q8_0.gguf' }))).toEqual({
+      result: 'unknown',
+    });
+    expect(
+      verifySdcppModel({ models: {} }, info({ diffusion_model: 'qwen-image-2.1-Q8_0.gguf' })),
+    ).toEqual({ result: 'unknown' });
   });
 
   it.each([[undefined], ['not json'], [JSON.stringify({ seed: 1 })], [{ generation_info: [] }]])(
     'cannot tell from %j',
     (value) => {
-      expect(findSdcppModelMismatch(qwenStatus, value)).toBeUndefined();
+      expect(verifySdcppModel(qwenStatus, value)).toEqual({ result: 'unknown' });
     },
   );
 });

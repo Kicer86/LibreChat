@@ -88,28 +88,46 @@ function generatedModels(info: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * Whether the model loaded as `status` produced a generation. Generation requests cannot name a
- * model, so another client of the server may switch models between the load and the generation;
- * the result's `generation_info.models` names the files it used. Files are compared by name per
- * slot (the status gives paths relative to the model root, the result bare names). Returns the
- * differing slots, or `undefined` when they match or the result names no files.
+ * Whether a result was made by the model loaded as `status`: its files (`match`), other files
+ * (`mismatch`, with the differing slots), or cannot tell (`unknown`: the result names no files,
+ * or none of the slots the status names).
  */
-export function findSdcppModelMismatch(
-  status: SdcppModelStatus,
-  info: unknown,
-): string | undefined {
+export type SdcppModelCheck =
+  | { result: 'match' }
+  | { result: 'mismatch'; detail: string }
+  | { result: 'unknown' };
+
+/**
+ * Checks which model produced a generation. Generation requests cannot name a model, so another
+ * client of the server may switch models between the load and the generation; the result's
+ * `generation_info.models` names the files it used. Files are compared by name per slot (the
+ * status gives paths relative to the model root, the result bare names).
+ *
+ * This detects another set of weights, not another recipe: two recipes using the same files
+ * with other settings, or same-named files in other folders, look alike. Telling recipes apart
+ * would need an identifier from sd-server, so LibreChat assumes it is the server's only client.
+ */
+export function verifySdcppModel(status: SdcppModelStatus, info: unknown): SdcppModelCheck {
   const actual = generatedModels(info);
   if (!actual) {
-    return undefined;
+    return { result: 'unknown' };
   }
   const differences: string[] = [];
+  let compared = 0;
   for (const [slot, expected] of Object.entries(status.models)) {
     const used = actual[slot];
-    if (typeof used === 'string' && basename(used) !== basename(expected)) {
+    if (typeof used !== 'string') {
+      continue;
+    }
+    compared++;
+    if (basename(used) !== basename(expected)) {
       differences.push(`${slot}: expected ${basename(expected)}, got ${basename(used)}`);
     }
   }
-  return differences.length > 0 ? differences.join('; ') : undefined;
+  if (differences.length > 0) {
+    return { result: 'mismatch', detail: differences.join('; ') };
+  }
+  return compared > 0 ? { result: 'match' } : { result: 'unknown' };
 }
 
 /** How long a holder keeps the server lock without renewing it (it renews while working). */
@@ -143,7 +161,7 @@ export class SdcppLockError extends Error {
  * Runs `task` while holding the lock for the sd.cpp server at `url`, so a model load and the
  * generation after it are not interleaved with another LibreChat request's load. With a
  * Redis-backed lock this holds across LibreChat instances. It does not stop clients outside
- * LibreChat from switching the model; `findSdcppModelMismatch` detects that afterwards.
+ * LibreChat from switching the model; `verifySdcppModel` detects that afterwards.
  *
  * The lease is renewed while the task runs. When it is lost (renewal refused, or failing until
  * the lease would expire) `task`'s signal is aborted, so it must pass the signal to every
