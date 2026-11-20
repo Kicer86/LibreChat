@@ -1,4 +1,5 @@
 import { logger } from '@librechat/data-schemas';
+import type { FileOwnerScope } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import { resolveDownloadPath } from '~/storage/path';
@@ -51,10 +52,11 @@ export interface LoadImageInputsParams {
   /** Storage used when a file record carries no `source`. */
   fileStrategy?: string;
   /**
-   * Looks up the requesting user's own image files (with dimensions) by ID; used for IDs that
-   * are not attached to this request, such as images generated earlier in the conversation.
+   * Looks up the owner's image files (with dimensions) by ID, like data-schemas'
+   * `getUserImageFiles`; used for IDs that are not attached to this request, such as images
+   * generated earlier in the conversation.
    */
-  findImageFiles: (userId: string, fileIds: string[]) => Promise<TFile[]>;
+  findImageFiles: (fileIds: string[], ownerScope: FileOwnerScope) => Promise<TFile[]>;
   getStrategyFunctions: (source: string) => { getDownloadStream?: GetDownloadStream };
   /** Images generated earlier in this request whose files may not be saved yet. */
   generatedImages?: GeneratedImageRegistry;
@@ -92,7 +94,8 @@ export async function loadImageInputs({
   const missing = imageIds.filter((id) => !filesById.has(id) && !generated.has(id));
   const userId = req?.user?.id;
   if (missing.length && userId) {
-    for (const file of await findImageFiles(userId, missing)) {
+    const ownerScope: FileOwnerScope = { userId, tenantId: req?.user?.tenantId };
+    for (const file of await findImageFiles(missing, ownerScope)) {
       filesById.set(file.file_id, file);
     }
   }

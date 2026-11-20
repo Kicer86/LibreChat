@@ -15,13 +15,19 @@ const image = (file_id: string, extra: Partial<TFile> = {}): TFile =>
   }) as TFile;
 
 const req = { user: { id: 'user-1' } } as unknown as ServerRequest;
+const tenantReq = { user: { id: 'user-1', tenantId: 'tenant-a' } } as unknown as ServerRequest;
 
 describe('loadImageInputs', () => {
   const getDownloadStream = jest.fn(async (_req: ServerRequest, filepath: string) =>
     Readable.from([Buffer.from(`bytes:${filepath}`)]),
   );
   const getStrategyFunctions = jest.fn(() => ({ getDownloadStream }));
-  const findImageFiles = jest.fn(async (_userId: string, _ids: string[]): Promise<TFile[]> => []);
+  const findImageFiles = jest.fn(
+    async (
+      _ids: string[],
+      _scope: { userId: string; tenantId?: string | null },
+    ): Promise<TFile[]> => [],
+  );
 
   beforeEach(() => jest.clearAllMocks());
 
@@ -47,7 +53,7 @@ describe('loadImageInputs', () => {
       getStrategyFunctions,
     });
 
-    expect(findImageFiles).toHaveBeenCalledWith('user-1', ['generated']);
+    expect(findImageFiles).toHaveBeenCalledWith(['generated'], { userId: 'user-1' });
     expect(result.map((input) => input.file.file_id)).toEqual(['generated', 'attached']);
     expect(result[1].mimeType).toBe('image/jpeg');
     expect(result[0].buffer.toString()).toBe('bytes:/images/user-1/generated.png');
@@ -134,6 +140,20 @@ describe('loadImageInputs', () => {
     });
 
     expect(result).toEqual([]);
-    expect(findImageFiles).toHaveBeenCalledWith('user-2', ['fresh']);
+    expect(findImageFiles).toHaveBeenCalledWith(['fresh'], { userId: 'user-2' });
+  });
+
+  it("scopes the lookup to the requesting user's tenant", async () => {
+    await loadImageInputs({
+      imageIds: ['earlier'],
+      requestFiles: [],
+      req: tenantReq,
+      findImageFiles,
+      getStrategyFunctions,
+    });
+    expect(findImageFiles).toHaveBeenCalledWith(['earlier'], {
+      userId: 'user-1',
+      tenantId: 'tenant-a',
+    });
   });
 });

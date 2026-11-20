@@ -657,7 +657,10 @@ describe('image tools - agent mode ToolMessage format', () => {
           }),
         );
 
-        expect(findImageFiles).toHaveBeenCalledWith('user-1', ['earlier']);
+        expect(findImageFiles).toHaveBeenCalledWith(
+          ['earlier'],
+          expect.objectContaining({ userId: 'user-1' }),
+        );
         expect(axios.post.mock.calls[0][0]).toBe('http://localhost:7860/sdapi/v1/img2img');
       });
 

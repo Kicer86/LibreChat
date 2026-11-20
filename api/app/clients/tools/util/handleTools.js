@@ -75,10 +75,10 @@ const { loadAuthValues } = require('~/server/services/Tools/credentials');
 const { getMCPServerTools, checkCapability } = require('~/server/services/Config');
 const { getMCPServersRegistry } = require('~/config');
 const {
-  getFiles,
   setMemory,
   deleteMemory,
   getRoleByName,
+  getUserImageFiles,
   getFormattedMemories,
 } = require('~/models');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
@@ -124,6 +124,9 @@ const getAuthFields = (toolKey) => {
   return manifestToolMap[toolKey]?.authConfig.map((auth) => auth.authField) ?? [];
 };
 
+/** Images generated in a request, until the tool-end callback saves them as files. */
+const generatedImages = createGeneratedImageRegistry();
+
 /**
  *
  * @param {object} params
@@ -142,27 +145,6 @@ const getAuthFields = (toolKey) => {
  * @param {AppConfig['imageOutputType']} [params.imageOutputType]
  * @returns {Promise<{ loadedTools: Tool[], toolContextMap: Object<string, any>, dynamicToolContextMap?: Object<string, any> } | Record<string,Tool>>}
  */
-/**
- * The requesting user's own image files (with dimensions), for image tools given image IDs that
- * are not attached to the current request, such as images generated earlier.
- * @param {string} userId
- * @param {string[]} fileIds
- */
-const findImageFiles = (userId, fileIds) =>
-  getFiles(
-    {
-      user: userId,
-      file_id: { $in: fileIds },
-      height: { $exists: true },
-      width: { $exists: true },
-    },
-    {},
-    {},
-  );
-
-/** Images generated in a request, until the tool-end callback saves them as files. */
-const generatedImages = createGeneratedImageRegistry();
-
 const loadTools = async ({
   user,
   agent,
@@ -272,7 +254,7 @@ const loadTools = async ({
     'stable-diffusion': {
       ...imageGenOptions,
       imageFiles: options.tool_resources?.[EToolResources.image_edit]?.files ?? [],
-      findImageFiles,
+      findImageFiles: getUserImageFiles,
       generatedImages,
       getStrategyFunctions,
     },
