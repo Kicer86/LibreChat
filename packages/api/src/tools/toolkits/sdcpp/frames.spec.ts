@@ -1,5 +1,5 @@
 import type { SdcppModel } from './catalog';
-import { resolveSdcppClip } from './frames';
+import { MAX_CLIP_PIXELS, clipFrameLimit, resolveSdcppClip } from './frames';
 
 const ltx: SdcppModel = {
   id: 'ltx',
@@ -108,5 +108,25 @@ describe('resolveSdcppClip', () => {
   it('takes any frame count from a model without a rule', () => {
     const plain: SdcppModel = { ...ltx, frameRule: undefined };
     expect(resolveSdcppClip({ frames: 30 }, plain, 121)).toMatchObject({ value: { frames: 30 } });
+  });
+});
+
+describe('clipFrameLimit', () => {
+  it('keeps the configured limit for clips that can be saved', () => {
+    expect(clipFrameLimit({ width: 768, height: 512 }, 121)).toBe(121);
+    expect(clipFrameLimit({}, 121)).toBe(121);
+  });
+
+  it('lowers it so all frames stay within the pixel limit for saving', () => {
+    expect(clipFrameLimit({ width: 2048, height: 2048 }, 121)).toBe(63);
+    expect(63 * 2048 * 2048).toBeLessThanOrEqual(MAX_CLIP_PIXELS);
+    expect(64 * 2048 * 2048).toBeGreaterThan(MAX_CLIP_PIXELS);
+  });
+
+  it('makes the model rule fit the lowered limit', () => {
+    expect(resolveSdcppClip({}, ltx, clipFrameLimit({ width: 2048, height: 2048 }, 121))).toEqual({
+      ok: true,
+      value: { frames: 57, fps: 24 },
+    });
   });
 });

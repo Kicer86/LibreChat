@@ -20,6 +20,26 @@ export type SdcppClipResult =
   | { ok: true; value: SdcppClip }
   | { ok: false; error: { code: SdcppClipErrorCode; message: string } };
 
+/**
+ * Most pixels a clip may have over all its frames: sharp's default input limit, which saving an
+ * animated image applies to every frame together. A larger clip could be generated but not saved.
+ */
+export const MAX_CLIP_PIXELS = 268_402_689;
+
+/**
+ * Most frames a clip of `size` may have: `maxFrames` (`librechat.yaml`), lowered so all frames
+ * stay within `MAX_CLIP_PIXELS` and the clip can be saved. An unknown size leaves `maxFrames`.
+ */
+export function clipFrameLimit(
+  size: Partial<Record<'width' | 'height', number>>,
+  maxFrames: number,
+): number {
+  if (!size.width || !size.height) {
+    return maxFrames;
+  }
+  return Math.min(maxFrames, Math.floor(MAX_CLIP_PIXELS / (size.width * size.height)));
+}
+
 /** Any frame count, for a model that states no rule. */
 const ANY_FRAME_COUNT: SdcppFrameRule = { offset: 0, step: 1, rounding: 'floor', min: 1 };
 
@@ -61,7 +81,7 @@ export function resolveSdcppClip(
   if (cap < rule.offset || highest < lowest) {
     return failure(
       'invalid_frames',
-      `Model "${model.id}" cannot make a clip within the limit of ${maxFrames} frames.`,
+      `Model "${model.id}" cannot make a clip within the limit of ${maxFrames} frames. Use a smaller size.`,
     );
   }
   const onRule = (count: number) => {

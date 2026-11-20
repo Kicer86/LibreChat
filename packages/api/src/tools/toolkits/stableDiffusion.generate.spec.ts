@@ -809,6 +809,24 @@ describe('generateStableDiffusionImage', () => {
       expect(sent('/sdcpp/v1/vid_gen')).toBeUndefined();
     });
 
+    it('makes no more frames than can be saved at the size asked for', async () => {
+      serve({ id: 'ltx', file: 'ltx.gguf' });
+      await generateStableDiffusionImage(
+        { prompt: 'waves', video: true, width: 2048, height: 2048 },
+        { url, req: req(), allowVideo: true },
+      );
+      expect(sent('/sdcpp/v1/vid_gen')).toMatchObject({
+        width: 2048,
+        height: 2048,
+        video_frames: 57,
+      });
+      const refused = await generateStableDiffusionImage(
+        { prompt: 'waves', video: true, width: 2048, height: 2048, frames: 65 },
+        { url, req: req(), allowVideo: true },
+      );
+      expect(refused).toEqual({ error: '"frames" must be from 1 to 57 for model "ltx".' });
+    });
+
     it('cancels a job that outlasts videoGenerationMs', async () => {
       serve({ id: 'ltx', file: 'ltx.gguf' }, undefined, { jobStates: ['generating'] });
       const result = await generateStableDiffusionImage(

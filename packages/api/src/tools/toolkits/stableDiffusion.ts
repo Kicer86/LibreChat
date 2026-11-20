@@ -42,6 +42,7 @@ import {
   parseSdcppCapabilities,
   parseSdcppDefaults,
   resolveSdcppClip,
+  clipFrameLimit,
   runSdcppVideoJob,
   buildSdcppVideoBody,
 } from './sdcpp';
@@ -593,7 +594,12 @@ export async function generateStableDiffusionImage(
     model: SdcppModel | undefined,
     signal: AbortSignal,
   ): Promise<
-    | { payload: Record<string, unknown>; settings: StableDiffusionSettings & SdcppRecipeSampling }
+    | {
+        payload: Record<string, unknown>;
+        settings: StableDiffusionSettings & SdcppRecipeSampling;
+        /** The size the model renders, the defaults included; unknown when the server keeps it. */
+        size: Partial<Record<'width' | 'height', number>>;
+      }
     | { error: string }
   > => {
     let defaults: StableDiffusionDefaults = {
@@ -614,10 +620,13 @@ export async function generateStableDiffusionImage(
       return { error: result.error.message };
     }
     signal.throwIfAborted();
+    const width = result.value.width ?? defaults.width;
+    const height = result.value.height ?? defaults.height;
     const sampling = sdcppRecipeSampling(model, request.params);
     return {
       payload: { ...request.payload, ...result.value, ...sampling },
       settings: { ...result.value, ...sampling },
+      size: { ...(width != null && { width }), ...(height != null && { height }) },
     };
   };
 
@@ -720,8 +729,8 @@ export async function generateStableDiffusionImage(
 
   type Attempt = StableDiffusionGeneration | { switchedAway: string };
   /**
-   * Makes a clip with the loaded video `model`: frames fitted to its rule, size and steps to the
-   * limits, then a job that runs within `videoGenerationMs` and is cancelled when it outlasts it
+   * Makes a clip with the loaded video `model`: size and steps fitted to the limits, frames to its
+   * rule and to what can be saved at that size, then a job that runs within `videoGenerationMs` and is cancelled when it outlasts it
    * or the response is stopped.
    */
   const generateVideo = async (
@@ -729,13 +738,14 @@ export async function generateStableDiffusionImage(
     status: SdcppModelStatus,
     signal: AbortSignal,
   ): Promise<Attempt> => {
-    const clip = resolveSdcppClip(request.clip, model, request.maxFrames);
-    if (!clip.ok) {
-      return { error: clip.error.message };
-    }
     const sized = await payloadFor(model, signal);
     if ('error' in sized) {
       return sized;
+    }
+    const maxFrames = clipFrameLimit(sized.size, request.maxFrames);
+    const clip = resolveSdcppClip(request.clip, model, maxFrames);
+    if (!clip.ok) {
+      return { error: clip.error.message };
     }
     const budgetMs = getOutboundTimeoutMs(appConfig, 'videoGenerationMs');
     const job = await runSdcppVideoJob({
