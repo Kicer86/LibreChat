@@ -19,6 +19,7 @@ describe('checkStableDiffusionParams', () => {
           seed: 123,
           sampler: 'euler_a',
           scheduler: 'karras',
+          count: 2,
         },
         { capabilities },
       ),
@@ -32,6 +33,7 @@ describe('checkStableDiffusionParams', () => {
         seed: 123,
         sampler_name: 'euler_a',
         scheduler: 'karras',
+        batch_size: 2,
       },
       maxSize: { width: 2048, height: 2048 },
     });
@@ -94,6 +96,22 @@ describe('checkStableDiffusionParams', () => {
     const check = checkStableDiffusionParams(input, { capabilities });
     expect(check).toMatchObject({ ok: false, error: { code } });
     expect(!check.ok && check.error.message).toContain(message);
+  });
+
+  it("limits the image count to librechat.yaml's and the server's batch limit", () => {
+    expect(checkStableDiffusionParams({ count: 4 })).toMatchObject({ ok: true });
+    expect(checkStableDiffusionParams({ count: 5 })).toMatchObject({
+      ok: false,
+      error: { code: 'invalid_count', message: '"count" must be a whole number from 1 to 4.' },
+    });
+    expect(checkStableDiffusionParams({ count: 0 })).toMatchObject({ ok: false });
+    const server = { ...capabilities, limits: { maxBatchCount: 2 } };
+    expect(
+      checkStableDiffusionParams({ count: 3 }, { limits: { maxImages: 8 }, capabilities: server }),
+    ).toMatchObject({
+      ok: false,
+      error: { message: '"count" must be a whole number from 1 to 2.' },
+    });
   });
 
   it("applies librechat.yaml's limits and the server's lower ones", () => {

@@ -21,6 +21,8 @@ export interface StableDiffusionParamsInput {
   seed?: number;
   sampler?: string;
   scheduler?: string;
+  /** How many images to make in one generation. */
+  count?: number;
 }
 
 /** Checked settings, named as the WebUI-compatible API takes them. */
@@ -33,6 +35,7 @@ export interface StableDiffusionParams {
   seed?: number;
   sampler_name?: string;
   scheduler?: string;
+  batch_size?: number;
 }
 
 /** The largest image the server and `librechat.yaml` allow. */
@@ -50,6 +53,7 @@ export type StableDiffusionParamsErrorCode =
   | 'invalid_steps'
   | 'invalid_cfg_scale'
   | 'invalid_seed'
+  | 'invalid_count'
   | 'unknown_sampler'
   | 'unknown_scheduler';
 
@@ -76,8 +80,8 @@ function matchName(name: string, listed: string[]): string | undefined {
 /**
  * Checks the calling model's generation settings against `librechat.yaml`'s limits and, on a
  * stable-diffusion.cpp server, against the server's own limits and sampler and scheduler lists.
- * The server ignores an unknown sampler or scheduler, and quietly changes a step count of 0, so
- * those are refused here with a message that says what is accepted. A sampler or scheduler named
+ * The server ignores an unknown sampler or scheduler, quietly changes a step count of 0 and makes
+ * no more images than its batch limit, so those are refused here with a message that says what is accepted. A sampler or scheduler named
  * in another case is given in the server's spelling, since sd.cpp matches schedulers exactly.
  */
 export function checkStableDiffusionParams(
@@ -87,6 +91,8 @@ export function checkStableDiffusionParams(
   const server = capabilities?.limits ?? {};
   const maxSize = limits?.maxSize ?? STABLE_DIFFUSION_LIMITS.maxSize;
   const maxSteps = limits?.maxSteps ?? STABLE_DIFFUSION_LIMITS.maxSteps;
+  const maxImagesConfigured = limits?.maxImages ?? STABLE_DIFFUSION_LIMITS.maxImages;
+  const maxImages = Math.min(maxImagesConfigured, server.maxBatchCount ?? maxImagesConfigured);
   const max: StableDiffusionMaxSize = {
     width: Math.min(maxSize, server.maxWidth ?? maxSize),
     height: Math.min(maxSize, server.maxHeight ?? maxSize),
@@ -131,6 +137,13 @@ export function checkStableDiffusionParams(
       );
     }
     value.seed = input.seed;
+  }
+
+  if (input.count != null) {
+    if (!isWholeNumber(input.count, 1, maxImages)) {
+      return failure('invalid_count', `"count" must be a whole number from 1 to ${maxImages}.`);
+    }
+    value.batch_size = input.count;
   }
 
   const lists = [

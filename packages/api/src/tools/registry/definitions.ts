@@ -235,6 +235,12 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
       description:
         'Seed for the random noise. The same seed, prompt and settings give the same image again; the result states the seed of each image. Omit, or pass -1, for a random one.',
     },
+    count: {
+      type: 'integer',
+      minimum: 1,
+      description:
+        'How many images to make at once, e.g. to offer variations to choose from; each gets its own seed and generated_image_id. Omit for one.',
+    },
     sampler: {
       type: 'string',
       description:

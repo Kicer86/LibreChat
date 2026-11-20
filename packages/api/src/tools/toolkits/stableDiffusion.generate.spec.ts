@@ -178,7 +178,15 @@ describe('generateStableDiffusionImage', () => {
   it("sends the settings asked for, sized for the loaded model's multiple", async () => {
     serve({ id: 'qwen', file: 'qwen.gguf' });
     const result = await generateStableDiffusionImage(
-      { prompt: 'a cat', width: 500, steps: 8, seed: 7, sampler: 'Euler_A', scheduler: 'Karras' },
+      {
+        prompt: 'a cat',
+        width: 500,
+        steps: 8,
+        seed: 7,
+        count: 2,
+        sampler: 'Euler_A',
+        scheduler: 'Karras',
+      },
       { url, req: req() },
     );
     expect(result).toEqual({ data: generated('qwen.gguf'), model: 'qwen' });
@@ -192,6 +200,7 @@ describe('generateStableDiffusionImage', () => {
       steps: 8,
       cfg_scale: 4.5,
       seed: 7,
+      batch_size: 2,
       sampler_name: 'euler_a',
       scheduler: 'karras',
     });
