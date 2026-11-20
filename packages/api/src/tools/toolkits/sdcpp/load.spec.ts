@@ -1,4 +1,5 @@
 import {
+  SdcppLockError,
   loadSdcppModel,
   hasReadySdcppModel,
   SdcppModelError,
@@ -153,8 +154,96 @@ describe('withSdcppServerLock', () => {
         { lock, url, waitMs: 1000, now: () => time, sleep: async (ms) => void (time += ms) },
         task,
       ),
-    ).rejects.toBeInstanceOf(SdcppModelError);
+    ).rejects.toMatchObject({ name: 'SdcppLockError', code: 'busy' });
     expect(task).not.toHaveBeenCalled();
     expect(lock.acquire).toHaveBeenCalledWith(`stable-diffusion:sdcpp:${url}`, 60_000);
+  });
+
+  describe('when the lease is lost', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    /** A task that runs until its signal fires, recording what happened. */
+    const waitForAbort = (order: string[], name: string) => (signal: AbortSignal) =>
+      new Promise<never>((_resolve, reject) => {
+        order.push(`${name}:start`);
+        signal.addEventListener('abort', () => {
+          order.push(`${name}:aborted`);
+          reject(new Error('canceled'));
+        });
+      });
+
+    it('stops the task when renewal is refused', async () => {
+      const lock = {
+        acquire: jest.fn(async () => 'token'),
+        extend: jest.fn(async () => false),
+        release: jest.fn(async () => true),
+      };
+      const order: string[] = [];
+      const run = withSdcppServerLock({ lock, url, waitMs: 0 }, waitForAbort(order, 'task'));
+      const outcome = run.catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(await outcome).toMatchObject({ code: 'lost' });
+      expect(order).toEqual(['task:start', 'task:aborted']);
+      expect(lock.release).toHaveBeenCalled();
+    });
+
+    it('rejects a result that finished after the lease was lost', async () => {
+      const lock = {
+        acquire: jest.fn(async () => 'token'),
+        extend: jest.fn(async () => false),
+        release: jest.fn(async () => true),
+      };
+      const run = withSdcppServerLock({ lock, url, waitMs: 0 }, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25_000));
+        return 'image';
+      });
+      const outcome = run.catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(25_000);
+      expect(await outcome).toBeInstanceOf(SdcppLockError);
+    });
+
+    it('keeps going through a failed renewal and stops before the lease expires', async () => {
+      const lock = {
+        acquire: jest.fn(async () => 'token'),
+        extend: jest.fn(async () => {
+          throw new Error('redis unavailable');
+        }),
+        release: jest.fn(async () => true),
+      };
+      const order: string[] = [];
+      const run = withSdcppServerLock({ lock, url, waitMs: 0 }, waitForAbort(order, 'task'));
+      const outcome = run.catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(order).toEqual(['task:start']);
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(await outcome).toMatchObject({ code: 'lost' });
+      expect(order).toEqual(['task:start', 'task:aborted']);
+    });
+
+    it('stops the first holder before another one can take the lock over', async () => {
+      const shared = createDistributedLock();
+      const failing = {
+        ...shared,
+        extend: jest.fn(async () => {
+          throw new Error('redis unavailable');
+        }),
+      };
+      const order: string[] = [];
+      const first = withSdcppServerLock(
+        { lock: failing, url, waitMs: 0 },
+        waitForAbort(order, 'first'),
+      );
+      const firstOutcome = first.catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const second = withSdcppServerLock({ lock: shared, url, waitMs: 120_000 }, async () => {
+        order.push('second:start');
+        return 'second';
+      });
+      await jest.advanceTimersByTimeAsync(70_000);
+      expect(await firstOutcome).toMatchObject({ code: 'lost' });
+      await expect(second).resolves.toBe('second');
+      expect(order).toEqual(['first:start', 'first:aborted', 'second:start']);
+    });
   });
 });

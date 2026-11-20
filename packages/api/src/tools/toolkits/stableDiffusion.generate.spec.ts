@@ -2,7 +2,9 @@ import axios from 'axios';
 import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import {
+  STABLE_DIFFUSION_LOCK_LOST,
   generateStableDiffusionImage,
+  STABLE_DIFFUSION_SERVER_BUSY,
   clearStableDiffusionBackendCache,
   STABLE_DIFFUSION_MODEL_UNSUPPORTED,
 } from './stableDiffusion';
@@ -254,6 +256,35 @@ describe('generateStableDiffusionImage', () => {
     await generateStableDiffusionImage({ prompt: 'a cat' }, { url, req: req(), lock });
     expect(lock.acquire).toHaveBeenCalledWith(`stable-diffusion:sdcpp:${url}`, expect.any(Number));
     expect(lock.release).toHaveBeenCalledWith(`stable-diffusion:sdcpp:${url}`, 'token');
+  });
+
+  describe('with the server lock', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    it('stops when the lock is lost during the generation', async () => {
+      serve({ id: 'qwen', file: 'qwen.gguf' }, undefined, { generateMs: 30_000 });
+      const lock = {
+        acquire: jest.fn(async () => 'token'),
+        extend: jest.fn(async () => false),
+        release: jest.fn(async () => true),
+      };
+      const result = generateStableDiffusionImage({ prompt: 'a cat' }, { url, req: req(), lock });
+      await jest.advanceTimersByTimeAsync(30_000);
+      await expect(result).resolves.toEqual({ error: STABLE_DIFFUSION_LOCK_LOST });
+    });
+
+    it('reports a server kept busy by other requests', async () => {
+      serve({ id: 'qwen', file: 'qwen.gguf' });
+      const lock = { acquire: jest.fn(async () => null), extend: jest.fn(), release: jest.fn() };
+      const result = generateStableDiffusionImage(
+        { prompt: 'a cat' },
+        { url, req: req(undefined, { imageGenerationMs: 1000 }), lock },
+      );
+      await jest.advanceTimersByTimeAsync(2000);
+      await expect(result).resolves.toEqual({ error: STABLE_DIFFUSION_SERVER_BUSY });
+      expect(mockPost).not.toHaveBeenCalled();
+    });
   });
 
   it('sends the request as it is to a server without a model list', async () => {

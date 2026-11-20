@@ -128,42 +128,78 @@ export interface WithSdcppServerLockParams {
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+/** Why the server lock could not protect a task: still held by another, or lost while held. */
+export class SdcppLockError extends Error {
+  constructor(
+    readonly code: 'busy' | 'lost',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SdcppLockError';
+  }
+}
+
 /**
  * Runs `task` while holding the lock for the sd.cpp server at `url`, so a model load and the
  * generation after it are not interleaved with another LibreChat request's load. With a
  * Redis-backed lock this holds across LibreChat instances. It does not stop clients outside
  * LibreChat from switching the model; `findSdcppModelMismatch` detects that afterwards.
- * Throws `SdcppModelError` when the lock is not free within `waitMs`.
+ *
+ * The lease is renewed while the task runs. When it is lost (renewal refused, or failing until
+ * the lease would expire) `task`'s signal is aborted, so it must pass the signal to every
+ * request and start none after it fired; the call then throws `SdcppLockError` (`lost`) even if
+ * the task finished, since its result was not protected. Aborting a request does not stop work
+ * sd-server already started. Throws `SdcppLockError` (`busy`) when the lock is not free within
+ * `waitMs`.
  */
 export async function withSdcppServerLock<T>(
   { lock, url, waitMs, now = Date.now, sleep = defaultSleep }: WithSdcppServerLockParams,
-  task: () => Promise<T>,
+  task: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const key = `stable-diffusion:sdcpp:${url}`;
   const deadline = now() + waitMs;
   let token = await lock.acquire(key, LOCK_TTL_MS);
   while (!token) {
     if (now() >= deadline) {
-      throw new SdcppModelError(`server lock still held after ${waitMs} ms`);
+      throw new SdcppLockError('busy', `server lock still held after ${waitMs} ms`);
     }
     await sleep(LOCK_RETRY_MS);
     token = await lock.acquire(key, LOCK_TTL_MS);
   }
 
   const held = token;
+  const controller = new AbortController();
+  const lose = (reason: string) => {
+    if (!controller.signal.aborted) {
+      logger.warn(`[StableDiffusion] ${reason}; stopping the generation`);
+      controller.abort(new SdcppLockError('lost', reason));
+    }
+  };
+  let renewedAt = now();
   const renew = setInterval(() => {
     lock.extend(key, held, LOCK_TTL_MS).then(
       (extended) => {
-        if (!extended) {
-          logger.warn('[StableDiffusion] Lost the sd.cpp server lock while generating');
+        if (extended) {
+          renewedAt = now();
+        } else {
+          lose('Lost the sd.cpp server lock');
         }
       },
-      () => logger.warn('[StableDiffusion] Could not renew the sd.cpp server lock'),
+      () => {
+        if (now() - renewedAt + LOCK_RENEW_MS >= LOCK_TTL_MS) {
+          lose('Could not renew the sd.cpp server lock before it expires');
+        }
+      },
     );
   }, LOCK_RENEW_MS);
   renew.unref?.();
   try {
-    return await task();
+    const result = await task(controller.signal);
+    controller.signal.throwIfAborted();
+    return result;
+  } catch (error) {
+    controller.signal.throwIfAborted();
+    throw error;
   } finally {
     clearInterval(renew);
     await lock.release(key, held).catch(() => undefined);

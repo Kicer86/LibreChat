@@ -11,6 +11,7 @@ import {
   loadSdcppModel,
   getSdcppCatalog,
   chooseSdcppModel,
+  SdcppLockError,
   SdcppModelError,
   hasReadySdcppModel,
   noteSdcppModelLoaded,
@@ -326,12 +327,16 @@ export async function prepareStableDiffusionRequest(
   return { url, payload, config, backend, ...(image && { image }) };
 }
 
-/** The prepared generation's config with an `imageGenerationMs` budget starting now. */
+/**
+ * The prepared generation's config with an `imageGenerationMs` budget starting now, which also
+ * ends when `signal` fires.
+ */
 export function stableDiffusionGenerationConfig(
   config: AxiosRequestConfig,
   appConfig: Pick<AppConfig, 'timeouts'> | null | undefined,
+  signal?: AbortSignal,
 ): AxiosRequestConfig {
-  return { ...config, ...configuredRequestBudget(appConfig, 'imageGenerationMs') };
+  return { ...config, ...configuredRequestBudget(appConfig, 'imageGenerationMs', signal) };
 }
 
 /** A Stable Diffusion WebUI API generation response (`images` base64, `info` JSON text). */
@@ -355,21 +360,28 @@ export const STABLE_DIFFUSION_MODEL_UNSUPPORTED =
 /** Shown to the model when the chosen model could not be loaded or kept loaded. */
 export const stableDiffusionModelFailed = (model: string) =>
   `The image model "${model}" could not be loaded. Try again later, or choose another model.`;
+/** Shown to the model when other requests kept the image server busy for the whole budget. */
+export const STABLE_DIFFUSION_SERVER_BUSY =
+  'The image server is busy with other images. Try again later.';
+/** Shown to the model when the generation stopped because its hold on the server was lost. */
+export const STABLE_DIFFUSION_LOCK_LOST =
+  'The image generation was stopped because another request may be using the image server. Try again.';
 
 /** Used when the caller passes no lock; it coordinates only this process's generations. */
 const processLock = createDistributedLock();
 
-function sdcppClient(context: StableDiffusionToolContext): {
-  probe: SdcppProbe;
-  post: SdcppPost;
-} {
+/** sd.cpp model requests for `context`'s server; each one also ends when `signal` fires. */
+function sdcppClient(
+  context: StableDiffusionToolContext,
+  signal?: AbortSignal,
+): { probe: SdcppProbe; post: SdcppPost } {
   const appConfig = context.req?.config;
   return {
     probe: (requestUrl) =>
       axios.get(
         requestUrl,
         stableDiffusionRequestConfig(context, requestUrl, {
-          ...configuredRequestBudget(appConfig, 'toolsMs'),
+          ...configuredRequestBudget(appConfig, 'toolsMs', signal),
           validateStatus: () => true,
         }),
       ),
@@ -378,7 +390,7 @@ function sdcppClient(context: StableDiffusionToolContext): {
         requestUrl,
         body,
         stableDiffusionRequestConfig(context, requestUrl, {
-          ...configuredRequestBudget(appConfig, 'imageGenerationMs'),
+          ...configuredRequestBudget(appConfig, 'imageGenerationMs', signal),
           validateStatus: () => true,
         }),
       ),
@@ -402,12 +414,12 @@ export async function generateStableDiffusionImage(
   }
   const appConfig = context.req?.config;
   /** Each generation, a retry included, gets its own budget from the moment it is sent. */
-  const generate = async (payload = request.payload) =>
+  const generate = async (payload = request.payload, signal?: AbortSignal) =>
     (
       await axios.post<StableDiffusionResponse>(
         request.url,
         payload,
-        stableDiffusionGenerationConfig(request.config, appConfig),
+        stableDiffusionGenerationConfig(request.config, appConfig, signal),
       )
     ).data;
   /** img2img sized for the model that renders it. */
@@ -436,8 +448,10 @@ export async function generateStableDiffusionImage(
     waitMs: getOutboundTimeoutMs(appConfig, 'imageGenerationMs'),
   };
   type Attempt = StableDiffusionGeneration | { switchedAway: string };
-  const attempt = async (requested?: string): Promise<Attempt> => {
-    let status: SdcppModelStatus = await readSdcppModelStatus(context.url, client.probe);
+  /** One choose, load and generate pass; every request ends when the server lock is lost. */
+  const attempt = async (requested: string | undefined, signal: AbortSignal): Promise<Attempt> => {
+    const locked = sdcppClient(context, signal);
+    let status: SdcppModelStatus = await readSdcppModelStatus(context.url, locked.probe);
     noteSdcppModelLoaded(context.url, status.recipe);
     const choice = chooseSdcppModel({
       catalog: { models: catalog.models, ...(status.recipe && { loaded: status.recipe }) },
@@ -449,13 +463,15 @@ export async function generateStableDiffusionImage(
     if (!choice.ok) {
       return { error: choice.error.message };
     }
+    signal.throwIfAborted();
     if (!choice.model) {
-      return { data: await generate(), ...(status.recipe && { model: status.recipe }) };
+      const data = await generate(request.payload, signal);
+      return { data, ...(status.recipe && { model: status.recipe }) };
     }
 
     const model = choice.model.id;
     try {
-      status = await loadSdcppModel(context.url, model, status, client.post);
+      status = await loadSdcppModel(context.url, model, status, locked.post);
     } catch (error) {
       if (!(error instanceof SdcppModelError)) {
         throw error;
@@ -465,7 +481,8 @@ export async function generateStableDiffusionImage(
     }
     noteSdcppModelLoaded(context.url, status.recipe);
 
-    const data = await generate(payloadFor(choice.model));
+    signal.throwIfAborted();
+    const data = await generate(payloadFor(choice.model), signal);
     const mismatch = findSdcppModelMismatch(status, data.info);
     if (mismatch) {
       logger.warn(`[StableDiffusion] The model changed while ${model} generated (${mismatch})`);
@@ -474,16 +491,26 @@ export async function generateStableDiffusionImage(
     return { data, model };
   };
 
-  return withSdcppServerLock(lockParams, async (): Promise<StableDiffusionGeneration> => {
-    const first = await attempt(input.model);
-    if (!('switchedAway' in first)) {
-      return first;
+  try {
+    return await withSdcppServerLock(lockParams, async (signal) => {
+      const first = await attempt(input.model, signal);
+      if (!('switchedAway' in first)) {
+        return first;
+      }
+      signal.throwIfAborted();
+      const second = await attempt(first.switchedAway, signal);
+      return 'switchedAway' in second
+        ? { error: stableDiffusionModelFailed(second.switchedAway) }
+        : second;
+    });
+  } catch (error) {
+    if (!(error instanceof SdcppLockError)) {
+      throw error;
     }
-    const second = await attempt(first.switchedAway);
-    return 'switchedAway' in second
-      ? { error: stableDiffusionModelFailed(second.switchedAway) }
-      : second;
-  });
+    return {
+      error: error.code === 'busy' ? STABLE_DIFFUSION_SERVER_BUSY : STABLE_DIFFUSION_LOCK_LOST,
+    };
+  }
 }
 
 export interface StableDiffusionContextParams {
