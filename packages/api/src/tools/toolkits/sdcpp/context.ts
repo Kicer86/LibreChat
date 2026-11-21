@@ -38,9 +38,17 @@ function describeFrameRule(rule: SdcppFrameRule): string {
 
 function describeModel(model: SdcppModel, loaded: string | undefined): string {
   const marker = model.id === loaded ? ' (loaded)' : '';
-  let abilities = 'text to video';
-  if (model.mode === 'image') {
-    abilities = model.acceptsImage ? 'text to image, img2img' : 'text to image only';
+  let abilities = 'text to image only';
+  if (model.mode === 'video') {
+    abilities = [
+      'text to video',
+      model.acceptsImage ? 'starts from an image' : '',
+      model.acceptsEndImage ? 'ends on an image' : '',
+    ]
+      .filter(Boolean)
+      .join(', ');
+  } else if (model.acceptsImage) {
+    abilities = 'text to image, img2img';
   }
   const frames = model.frameRule ? describeFrameRule(model.frameRule) : '';
   const description = model.description ? ` ${model.description}` : '';
@@ -50,7 +58,7 @@ function describeModel(model: SdcppModel, loaded: string | undefined): string {
 /**
  * The models the `stable-diffusion` tool may use, as tool context for the model calling it: the
  * image models, then the video models, each with its ID (the tool's `model` argument), name, what
- * it can do, the settings it renders with by default, a video model's frame counts, and the
+ * it can do (a video model: whether a clip can start from or end on an image), the settings it renders with by default, a video model's frame counts, and the
  * server's own description, with the loaded one marked. Empty when no model is allowed.
  */
 export function formatSdcppModels(

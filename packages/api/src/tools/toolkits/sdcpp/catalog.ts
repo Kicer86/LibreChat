@@ -11,8 +11,10 @@ export interface SdcppModel {
   name: string;
   description?: string;
   mode: SdcppModelMode;
-  /** Whether the model can start from an input image (img2img, or image-to-video). */
+  /** Whether the model can start from an input image (img2img, or a clip's first frame). */
   acceptsImage: boolean;
+  /** Video models only: whether a clip can end on an input image (its last frame). */
+  acceptsEndImage?: boolean;
   /** Generated widths and heights must be multiples of this. */
   sizeMultiple: number;
   /** The recipe's own output size, which the server uses when a request gives none. */
@@ -154,6 +156,7 @@ function parseRecipe(recipe: unknown): SdcppModel | undefined {
     ...(sampler && { sampler }),
     ...(scheduler && { scheduler }),
     ...(mode === 'video' && {
+      acceptsEndImage: features.end_image === true,
       ...(frames && { frames }),
       ...(fps && { fps }),
       frameRule: parseFrameRule(recipe.video_constraints),
