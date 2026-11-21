@@ -13,9 +13,10 @@ const {
   getBalanceConfig,
   getEnvProxyDispatcher,
   getTransactionsConfig,
+  loadImageInputs,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
-const { spendTokens, getFiles } = require('~/models');
+const { spendTokens, getUserImageFiles } = require('~/models');
 
 /**
  * Configure proxy support for Google APIs
@@ -126,85 +127,31 @@ async function initializeGeminiClient(options = {}) {
 }
 
 /**
- * Convert image files to Gemini inline data format
+ * Loads the images named by `image_ids` (attached to the request, generated earlier in it, or the
+ * user's own files) as Gemini inline data, in order; images that cannot be loaded are skipped.
  * @param {Object} params - Parameters
  * @returns {Promise<Array>} - Array of inline data objects
  */
-async function convertImagesToInlineData({ imageFiles, image_ids, req, fileStrategy }) {
-  if (!image_ids || image_ids.length === 0) {
-    return [];
-  }
-
-  const streamMethods = {};
-  const requestFilesMap = Object.fromEntries(imageFiles.map((f) => [f.file_id, { ...f }]));
-  const orderedFiles = new Array(image_ids.length);
-  const idsToFetch = [];
-  const indexOfMissing = Object.create(null);
-
-  for (let i = 0; i < image_ids.length; i++) {
-    const id = image_ids[i];
-    const file = requestFilesMap[id];
-    if (file) {
-      orderedFiles[i] = file;
-    } else {
-      idsToFetch.push(id);
-      indexOfMissing[id] = i;
-    }
-  }
-
-  if (idsToFetch.length && req?.user?.id) {
-    const fetchedFiles = await getFiles(
-      {
-        user: req.user.id,
-        file_id: { $in: idsToFetch },
-        height: { $exists: true },
-        width: { $exists: true },
-      },
-      {},
-      {},
-    );
-
-    for (const file of fetchedFiles) {
-      requestFilesMap[file.file_id] = file;
-      orderedFiles[indexOfMissing[file.file_id]] = file;
-    }
-  }
-
-  const inlineDataArray = [];
-  for (const imageFile of orderedFiles) {
-    if (!imageFile) continue;
-
-    try {
-      const source = imageFile.source || fileStrategy;
-      if (!source) continue;
-
-      let getDownloadStream = streamMethods[source];
-      if (!getDownloadStream) {
-        ({ getDownloadStream } = getStrategyFunctions(source));
-        streamMethods[source] = getDownloadStream;
-      }
-      if (!getDownloadStream) continue;
-
-      const stream = await getDownloadStream(req, imageFile.filepath);
-      if (!stream) continue;
-
-      const chunks = [];
-      for await (const chunk of stream) {
-        chunks.push(chunk);
-      }
-      const buffer = Buffer.concat(chunks);
-      const base64Data = buffer.toString('base64');
-      const mimeType = imageFile.type || 'image/png';
-
-      inlineDataArray.push({
-        inlineData: { mimeType, data: base64Data },
-      });
-    } catch (error) {
-      logger.error('[GeminiImageGen] Error processing image:', imageFile.file_id, error);
-    }
-  }
-
-  return inlineDataArray;
+async function convertImagesToInlineData({
+  imageFiles,
+  image_ids,
+  req,
+  fileStrategy,
+  generatedImages,
+}) {
+  const images = await loadImageInputs({
+    imageIds: image_ids,
+    requestFiles: imageFiles,
+    req,
+    fileStrategy,
+    findImageFiles: getUserImageFiles,
+    getStrategyFunctions,
+    generatedImages,
+    logPrefix: '[GeminiImageGen]',
+  });
+  return images.map((image) => ({
+    inlineData: { mimeType: image.mimeType, data: image.buffer.toString('base64') },
+  }));
 }
 
 /**
@@ -317,7 +264,15 @@ function createGeminiImageTool(fields = {}) {
     throw new Error('This tool is only available for agents.');
   }
 
-  const { req, imageFiles = [], userId, fileStrategy, GEMINI_API_KEY, GOOGLE_KEY } = fields;
+  const {
+    req,
+    imageFiles = [],
+    userId,
+    fileStrategy,
+    generatedImages,
+    GEMINI_API_KEY,
+    GOOGLE_KEY,
+  } = fields;
 
   const imageOutputType = fields.imageOutputType || EImageOutputType.PNG;
 
@@ -350,6 +305,7 @@ function createGeminiImageTool(fields = {}) {
           image_ids,
           req,
           fileStrategy,
+          generatedImages,
         });
         contents.push(...contextImages);
         logger.debug('[GeminiImageGen] Added', contextImages.length, 'context images');
@@ -427,6 +383,11 @@ function createGeminiImageTool(fields = {}) {
 
       const dataUrl = `data:${mimeType};base64,${imageData}`;
       const file_ids = [v4()];
+      generatedImages?.remember(req, {
+        file: { file_id: file_ids[0] },
+        buffer: convertedBuffer,
+        mimeType,
+      });
       const content = [
         {
           type: ContentTypes.IMAGE_URL,

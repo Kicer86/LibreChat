@@ -33,6 +33,7 @@ jest.mock('@librechat/api', () => ({
   extractBaseURL: jest.fn((url) => url),
   getProxyDispatcher: jest.fn(() => undefined),
   applyAxiosProxyConfig: jest.fn(),
+  loadImageInputs: jest.requireActual('@librechat/api').loadImageInputs,
 }));
 
 jest.mock('~/server/services/Files/strategies', () => ({
@@ -40,7 +41,7 @@ jest.mock('~/server/services/Files/strategies', () => ({
 }));
 
 jest.mock('~/models', () => ({
-  getFiles: jest.fn().mockResolvedValue([]),
+  getUserImageFiles: jest.fn().mockResolvedValue([]),
 }));
 
 describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
@@ -427,5 +428,85 @@ describe('OpenAIImageTools - approved error text', () => {
 
     expect(text).toBe(FALLBACK);
     expect(logged(SECRET)).toBe(false);
+  });
+});
+
+describe('OpenAIImageTools input images', () => {
+  const { createGeneratedImageRegistry } = jest.requireActual('@librechat/api');
+  const { getUserImageFiles } = require('~/models');
+  let originalEnv;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    originalEnv = { ...process.env };
+    process.env.IMAGE_GEN_OAI_API_KEY = 'test-api-key';
+    delete process.env.IMAGE_GEN_OAI_BASEURL;
+    delete process.env.IMAGE_GEN_OAI_AZURE_API_VERSION;
+    axios.post.mockResolvedValue({ data: { data: [{ b64_json: 'ZWRpdGVk' }] } });
+    getStrategyFunctions.mockReturnValue({
+      getDownloadStream: jest.fn(async () => Readable.from([Buffer.from('stored-bytes')])),
+    });
+    OpenAI.mockImplementation(() => ({
+      images: { generate: jest.fn().mockResolvedValue({ data: [{ b64_json: 'Z2VuZXJhdGVk' }] }) },
+    }));
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  /** The bytes of each image the edit request carried. */
+  const sentImages = () => {
+    const formData = axios.post.mock.calls[0][1];
+    const body = formData.getBuffer().toString();
+    return { generated: body.includes('generated'), stored: body.includes('stored-bytes') };
+  };
+
+  it('edits an image generated earlier in the request before its file is saved', async () => {
+    const req = { user: { id: 'user-1' } };
+    const generatedImages = createGeneratedImageRegistry();
+    const [imageGenTool, imageEditTool] = createOpenAIImageTools({
+      isAgent: true,
+      req,
+      generatedImages,
+    });
+    const [generated] = await imageGenTool.func({ prompt: 'a cat' });
+    const generatedId = /generated_image_id: "([^"]+)"/.exec(generated[0].text)[1];
+
+    const [edited] = await imageEditTool.func({ prompt: 'a dog', image_ids: [generatedId] });
+
+    expect(edited[0].text).toContain('generated_image_id');
+    expect(sentImages()).toEqual({ generated: true, stored: false });
+    expect(getUserImageFiles).not.toHaveBeenCalled();
+  });
+
+  it("looks other IDs up among the user's own files in their tenant", async () => {
+    getUserImageFiles.mockResolvedValueOnce([
+      { file_id: 'earlier', source: 'local', filepath: '/images/earlier.png', type: 'image/png' },
+    ]);
+    const [, imageEditTool] = createOpenAIImageTools({
+      isAgent: true,
+      req: { user: { id: 'user-1', tenantId: 'tenant-1' } },
+    });
+
+    await imageEditTool.func({ prompt: 'a dog', image_ids: ['earlier'] });
+
+    expect(getUserImageFiles).toHaveBeenCalledWith(['earlier'], {
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+    });
+    expect(sentImages()).toEqual({ generated: false, stored: true });
+  });
+
+  it('tells the model when none of the images can be loaded, without calling the API', async () => {
+    const [, imageEditTool] = createOpenAIImageTools({
+      isAgent: true,
+      req: { user: { id: 'user-1' } },
+    });
+
+    const [text] = await imageEditTool.func({ prompt: 'a dog', image_ids: ['nope'] });
+
+    expect(text).toContain('could not be loaded');
+    expect(axios.post).not.toHaveBeenCalled();
   });
 });

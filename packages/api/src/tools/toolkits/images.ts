@@ -8,7 +8,7 @@ type GetDownloadStream = (req: ServerRequest, filepath: string) => Promise<NodeJ
 
 /** An input image resolved from an image ID, ready to send to an image API. */
 export interface ImageInput {
-  file: Pick<TFile, 'file_id'> & Partial<Pick<TFile, 'width' | 'height'>>;
+  file: Pick<TFile, 'file_id'> & Partial<Pick<TFile, 'width' | 'height' | 'filename'>>;
   buffer: Buffer;
   mimeType: string;
 }

@@ -11,9 +11,10 @@ const {
   extractBaseURL,
   getProxyDispatcher,
   applyAxiosProxyConfig,
+  loadImageInputs,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
-const { getFiles } = require('~/models');
+const { getUserImageFiles } = require('~/models');
 
 const displayMessage =
   "The tool displayed an image. All generated images are already plainly visible, so don't repeat the descriptions in detail. Do not list download links as they are available in the UI already. The user may download the images by clicking on them, but do not mention anything about downloading to the user.";
@@ -67,7 +68,7 @@ function createOpenAIImageTools(fields = {}) {
   if (!override && !fields.isAgent) {
     throw new Error('This tool is only available for agents.');
   }
-  const { req } = fields;
+  const { req, generatedImages } = fields;
   const imageOutputType = fields.imageOutputType || EImageOutputType.PNG;
   const appFileStrategy = fields.fileStrategy;
 
@@ -213,6 +214,11 @@ function createOpenAIImageTools(fields = {}) {
       ];
 
       const file_ids = [v4()];
+      generatedImages?.remember(req, {
+        file: { file_id: file_ids[0] },
+        buffer: Buffer.from(base64Image, 'base64'),
+        mimeType: `image/${output_format}`,
+      });
       const response = [
         {
           type: ContentTypes.TEXT,
@@ -250,72 +256,25 @@ function createOpenAIImageTools(fields = {}) {
       formData.append('quality', quality);
       formData.append('size', size);
 
-      /** @type {Record<FileSources, undefined | NodeStreamDownloader<File>>} */
-      const streamMethods = {};
-
-      const requestFilesMap = Object.fromEntries(imageFiles.map((f) => [f.file_id, { ...f }]));
-
-      const orderedFiles = new Array(image_ids.length);
-      const idsToFetch = [];
-      const indexOfMissing = Object.create(null);
-
-      for (let i = 0; i < image_ids.length; i++) {
-        const id = image_ids[i];
-        const file = requestFilesMap[id];
-
-        if (file) {
-          orderedFiles[i] = file;
-        } else {
-          idsToFetch.push(id);
-          indexOfMissing[id] = i;
-        }
-      }
-
-      if (idsToFetch.length) {
-        const fetchedFiles = await getFiles(
-          {
-            user: req.user.id,
-            file_id: { $in: idsToFetch },
-            height: { $exists: true },
-            width: { $exists: true },
-          },
-          {},
-          {},
+      const images = await loadImageInputs({
+        imageIds: image_ids,
+        requestFiles: imageFiles,
+        req,
+        fileStrategy: appFileStrategy,
+        findImageFiles: getUserImageFiles,
+        getStrategyFunctions,
+        generatedImages,
+        logPrefix: '[ImageEditOAI]',
+      });
+      if (images.length === 0) {
+        return returnValue(
+          'The images to edit could not be loaded. Use the IDs of images attached to this request or generated earlier.',
         );
-
-        for (const file of fetchedFiles) {
-          requestFilesMap[file.file_id] = file;
-          orderedFiles[indexOfMissing[file.file_id]] = file;
-        }
       }
-      for (const imageFile of orderedFiles) {
-        if (!imageFile) {
-          continue;
-        }
-        /** @type {NodeStream<File>} */
-        let stream;
-        /** @type {NodeStreamDownloader<File>} */
-        let getDownloadStream;
-        const source = imageFile.source || appFileStrategy;
-        if (!source) {
-          throw new Error('No source found for image file');
-        }
-        if (streamMethods[source]) {
-          getDownloadStream = streamMethods[source];
-        } else {
-          ({ getDownloadStream } = getStrategyFunctions(source));
-          streamMethods[source] = getDownloadStream;
-        }
-        if (!getDownloadStream) {
-          throw new Error(`No download stream method found for source: ${source}`);
-        }
-        stream = await getDownloadStream(req, imageFile.filepath);
-        if (!stream) {
-          throw new Error('Failed to get download stream for image file');
-        }
-        formData.append('image[]', stream, {
-          filename: imageFile.filename,
-          contentType: imageFile.type,
+      for (const image of images) {
+        formData.append('image[]', image.buffer, {
+          filename: image.file.filename || `${image.file.file_id}.png`,
+          contentType: image.mimeType,
         });
       }
 
@@ -383,6 +342,11 @@ function createOpenAIImageTools(fields = {}) {
         ];
 
         const file_ids = [v4()];
+        generatedImages?.remember(req, {
+          file: { file_id: file_ids[0] },
+          buffer: Buffer.from(base64Image, 'base64'),
+          mimeType: `image/${imageOutputType}`,
+        });
         const textResponse = [
           {
             type: ContentTypes.TEXT,

@@ -6,7 +6,7 @@ jest.mock('@google/genai', () => ({ GoogleGenAI: jest.fn() }));
 jest.mock('~/server/services/Files/strategies', () => ({ getStrategyFunctions: jest.fn() }));
 jest.mock('~/models', () => ({
   spendTokens: jest.fn(),
-  getFiles: jest.fn().mockResolvedValue([]),
+  getUserImageFiles: jest.fn().mockResolvedValue([]),
 }));
 
 const SECRET = 'PRIVATE-PROVIDER-DETAIL';
@@ -105,5 +105,65 @@ describe('GeminiImageGen approved error text', () => {
     );
     expect(text).not.toContain('/missing/');
     expect(GoogleGenAI).not.toHaveBeenCalled();
+  });
+});
+
+describe('GeminiImageGen input images', () => {
+  const sharp = require('sharp');
+  const { Readable } = require('stream');
+  const { createGeneratedImageRegistry } = require('@librechat/api');
+  const { getUserImageFiles } = require('~/models');
+  const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+  let generateContent;
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const png = await sharp({
+      create: { width: 4, height: 4, channels: 3, background: { r: 255, g: 0, b: 0 } },
+    })
+      .png()
+      .toBuffer();
+    generateContent = jest.fn().mockResolvedValue({
+      candidates: [{ content: { parts: [{ inlineData: { data: png.toString('base64') } }] } }],
+    });
+    GoogleGenAI.mockImplementation(() => ({ models: { generateContent } }));
+    getStrategyFunctions.mockReturnValue({
+      getDownloadStream: jest.fn(async () => Readable.from([Buffer.from('stored-bytes')])),
+    });
+  });
+
+  /** The inline images the n-th request sent with its prompt. */
+  const sentImages = (call) =>
+    generateContent.mock.calls[call][0].contents.filter((part) => part.inlineData);
+
+  it('uses an image generated earlier in the request before its file is saved', async () => {
+    const generatedImages = createGeneratedImageRegistry();
+    const tool = createTool({ generatedImages });
+    const [content] = await tool.func({ prompt: 'a cat' });
+    const generatedId = /generated_image_id: "([^"]+)"/.exec(content[0].text)[1];
+
+    await tool.func({ prompt: 'the cat in a hat', image_ids: [generatedId] });
+
+    const [image] = sentImages(1);
+    expect(image.inlineData.mimeType).toBe('image/png');
+    expect(Buffer.from(image.inlineData.data, 'base64').subarray(1, 4).toString()).toBe('PNG');
+    expect(getUserImageFiles).not.toHaveBeenCalled();
+  });
+
+  it("looks other IDs up among the user's own files in their tenant", async () => {
+    getUserImageFiles.mockResolvedValueOnce([
+      { file_id: 'earlier', source: 'local', filepath: '/images/earlier.png', type: 'image/png' },
+    ]);
+    const tool = createTool({ req: { user: { id: 'user-1', tenantId: 'tenant-1' } } });
+
+    await tool.func({ prompt: 'a cat', image_ids: ['earlier', 'unknown'] });
+
+    expect(getUserImageFiles).toHaveBeenCalledWith(['earlier', 'unknown'], {
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+    });
+    const images = sentImages(0);
+    expect(images).toHaveLength(1);
+    expect(Buffer.from(images[0].inlineData.data, 'base64').toString()).toBe('stored-bytes');
   });
 });

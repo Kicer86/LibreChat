@@ -198,6 +198,7 @@ const loadTools = async ({
         imageOutputType,
         fileStrategy,
         imageFiles,
+        generatedImages,
       });
     },
     gemini_image_gen: async (_toolContextMap, dynamicToolContextMap) => {
@@ -219,6 +220,7 @@ const loadTools = async ({
         imageFiles,
         userId: user,
         fileStrategy,
+        generatedImages,
       });
     },
   };
