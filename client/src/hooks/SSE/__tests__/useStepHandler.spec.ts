@@ -34,8 +34,8 @@ import type {
 import type { ActiveSubagentPanel } from '@librechat/chat/react';
 import type { PtcTrace, PtcTraceEntry } from '~/common';
 import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/hooks/SSE/ptc';
+import { toolProgressByToolCallId, toolProgressKey } from '~/hooks/SSE/progress';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
-import { toolProgressByToolCallId } from '~/hooks/SSE/progress';
 import { IsolatedAtomStore } from 'test/harness';
 
 /** `Constants` is a heterogeneous enum (`string | number`); annotate as
@@ -2530,7 +2530,9 @@ describe('useStepHandler', () => {
         const { result } = renderHook(
           () => ({
             ...useStepHandler(createHookParams()),
-            progress: useAtomValue(toolProgressByToolCallId('tool-call-1')),
+            progress: useAtomValue(
+              toolProgressByToolCallId(toolProgressKey('run-1', 'tool-call-1')),
+            ),
           }),
           { wrapper },
         );
@@ -2586,6 +2588,62 @@ describe('useStepHandler', () => {
         expect(result.current.progress).toBeNull();
       },
     );
+  });
+
+  describe('tool progress across runs', () => {
+    const wrapper = ({ children }: React.PropsWithChildren) =>
+      React.createElement(RecoilRoot, null, React.createElement(IsolatedAtomStore, null, children));
+    const report = (runId: string | undefined, completed: number) => ({
+      event: StepEvents.ON_TOOL_PROGRESS as const,
+      data: {
+        tool_call_id: 'call_0',
+        ...(runId && { runId }),
+        stage: 'sampling',
+        completed,
+        total: 20,
+      },
+    });
+
+    it('keeps two runs reusing a call id apart, and one run clearing only its own', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(
+        () => ({
+          first: useStepHandler(createHookParams()),
+          second: useStepHandler(createHookParams()),
+          a: useAtomValue(toolProgressByToolCallId(toolProgressKey('response-A', 'call_0'))),
+          b: useAtomValue(toolProgressByToolCallId(toolProgressKey('response-B', 'call_0'))),
+        }),
+        { wrapper },
+      );
+      const submission = createSubmission();
+      act(() => {
+        result.current.first.stepHandler(report('response-A', 10), submission);
+        result.current.second.stepHandler(report('response-B', 2), submission);
+      });
+      expect(result.current.a).toEqual({ stage: 'sampling', completed: 10, total: 20 });
+      expect(result.current.b).toEqual({ stage: 'sampling', completed: 2, total: 20 });
+
+      act(() => {
+        result.current.first.clearStepMaps();
+      });
+      expect(result.current.a).toBeNull();
+      expect(result.current.b).toEqual({ stage: 'sampling', completed: 2, total: 20 });
+    });
+
+    it('drops a report that names no run, which no card can be matched to', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(
+        () => ({
+          handler: useStepHandler(createHookParams()),
+          unscoped: useAtomValue(toolProgressByToolCallId(toolProgressKey('', 'call_0'))),
+        }),
+        { wrapper },
+      );
+      act(() => {
+        result.current.handler.stepHandler(report(undefined, 5), createSubmission());
+      });
+      expect(result.current.unscoped).toBeNull();
+    });
   });
 
   describe('on_run_step_completed event', () => {

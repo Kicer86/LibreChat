@@ -148,7 +148,11 @@ describe('reduceStep', () => {
     ]);
     const progress = { tool_call_id: 'call-1', stage: 'sampling', completed: 2, total: 4 };
     expect(reduceStep(state, { event: StepEvents.ON_TOOL_PROGRESS, data: progress }, ctx)).toEqual([
-      { type: 'tool-progress', event: progress },
+      { type: 'tool-progress', event: progress, parentMessageId: '' },
+    ]);
+    const scoped = { ...progress, runId: Constants.USE_PRELIM_RESPONSE_MESSAGE_ID as string };
+    expect(reduceStep(state, { event: StepEvents.ON_TOOL_PROGRESS, data: scoped }, ctx)).toEqual([
+      { type: 'tool-progress', event: scoped, parentMessageId: 'resp-1' },
     ]);
     expect(writes).toHaveLength(0);
   });

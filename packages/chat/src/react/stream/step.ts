@@ -30,9 +30,9 @@ import {
   MESSAGE_UPDATE_INTERVAL,
 } from '../../core';
 import { ptcTraceByToolCallId, EMPTY_PTC_TRACE, PTC_TRACE_MAX_ENTRIES, ptcTraceKey } from './ptc';
+import { toolProgressByToolCallId, toolProgressKey } from './progress';
 import { phaseReceipts, visitPhaseStamps } from './receipt';
 import { sandboxStartingByToolCallId } from './sandbox';
-import { toolProgressByToolCallId } from './progress';
 
 type TUseStepHandler = {
   announcePolite: (options: AnnounceOptions) => void;
@@ -174,34 +174,44 @@ export function useStepHandler({
     knownSandboxAtomKeys.current.clear();
   }, [sandboxStore]);
 
-  /** Tool-call ids whose progress atom is set, so completion can clear them. */
-  const knownProgressAtomKeys = useRef(new Set<string>());
+  /** Progress atoms this handler set, by tool-call id, so completion clears only its own. */
+  const knownProgressAtomKeys = useRef(new Map<string, Set<string>>());
   const progressStore = useStore();
   const setToolProgress = useCallback(
-    (event: ToolProgressEvent): void => {
+    (event: ToolProgressEvent, parentMessageId: string): void => {
       const { tool_call_id: toolCallId, runId: _runId, ...progress } = event;
-      if (!toolCallId) {
+      /** Without a response message there is no card to scope the report to. */
+      if (!toolCallId || !parentMessageId) {
         return;
       }
-      knownProgressAtomKeys.current.add(toolCallId);
-      progressStore.set(toolProgressByToolCallId(toolCallId), progress);
+      const key = toolProgressKey(parentMessageId, toolCallId);
+      const keys = knownProgressAtomKeys.current.get(toolCallId) ?? new Set<string>();
+      keys.add(key);
+      knownProgressAtomKeys.current.set(toolCallId, keys);
+      progressStore.set(toolProgressByToolCallId(key), progress);
     },
     [progressStore],
   );
 
   const clearToolProgress = useCallback(
     (toolCallId?: string | null): void => {
-      if (!toolCallId || !knownProgressAtomKeys.current.delete(toolCallId)) {
+      const keys = toolCallId ? knownProgressAtomKeys.current.get(toolCallId) : undefined;
+      if (!toolCallId || !keys) {
         return;
       }
-      progressStore.set(toolProgressByToolCallId(toolCallId), null);
+      knownProgressAtomKeys.current.delete(toolCallId);
+      for (const key of keys) {
+        progressStore.set(toolProgressByToolCallId(key), null);
+      }
     },
     [progressStore],
   );
 
   const resetProgressAtoms = useCallback((): void => {
-    for (const toolCallId of knownProgressAtomKeys.current) {
-      progressStore.set(toolProgressByToolCallId(toolCallId), null);
+    for (const keys of knownProgressAtomKeys.current.values()) {
+      for (const key of keys) {
+        progressStore.set(toolProgressByToolCallId(key), null);
+      }
     }
     knownProgressAtomKeys.current.clear();
   }, [progressStore]);
@@ -356,7 +366,7 @@ export function useStepHandler({
             clearToolProgress(effect.toolCallId);
             break;
           case 'tool-progress':
-            setToolProgress(effect.event);
+            setToolProgress(effect.event, effect.parentMessageId);
             break;
           case 'skill-authored':
             onSkillAuthoringComplete?.();

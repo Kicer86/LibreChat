@@ -42,7 +42,7 @@ export type StepEffect =
   | { type: 'sandbox-settled'; toolCallId?: string }
   | { type: 'skill-authored' }
   | { type: 'ptc'; event: PtcToolCallEvent; parentMessageId: string }
-  | { type: 'tool-progress'; event: ToolProgressEvent }
+  | { type: 'tool-progress'; event: ToolProgressEvent; parentMessageId: string }
   | { type: 'subagent'; invocationKey: string; events: SubagentUpdateEvent[] }
   | { type: 'subagent-index'; conversationId: string };
 

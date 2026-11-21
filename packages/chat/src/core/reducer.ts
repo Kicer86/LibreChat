@@ -267,7 +267,12 @@ export function reduceStep(state: StreamState, event: StepEvent, ctx: StepContex
   }
 
   if (event.event === StepEvents.ON_TOOL_PROGRESS) {
-    effects.push({ type: 'tool-progress', event: event.data });
+    /** Scoped to the response message, as the PTC trace is: call ids repeat across runs. */
+    effects.push({
+      type: 'tool-progress',
+      event: event.data,
+      parentMessageId: resolveResponseId(submission, event.data.runId),
+    });
     return effects;
   }
 

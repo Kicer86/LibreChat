@@ -24,7 +24,7 @@ export type { AttachmentHandler } from './attachments';
 export type { UsageHandlers } from './usage';
 export type { StepHandlers } from './step';
 export { sandboxStartingByToolCallId } from './sandbox';
-export { toolProgressByToolCallId } from './progress';
+export { toolProgressByToolCallId, toolProgressKey } from './progress';
 export { ptcTraceKey, ptcTraceByToolCallId, EMPTY_PTC_TRACE, PTC_TRACE_MAX_ENTRIES } from './ptc';
 export type {
   StreamHost,

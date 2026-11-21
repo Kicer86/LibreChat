@@ -1,1 +1,1 @@
-export { toolProgressByToolCallId } from '@librechat/chat/react';
+export { toolProgressByToolCallId, toolProgressKey } from '@librechat/chat/react';
