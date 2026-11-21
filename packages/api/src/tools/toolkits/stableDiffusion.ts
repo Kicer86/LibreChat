@@ -172,6 +172,31 @@ export function sdcppSizeTarget(model: SdcppModel): StableDiffusionSizeTarget {
   return { longestSide: recipeSide > 0 ? recipeSide : IMAGE_SIZE, multiple: model.sizeMultiple };
 }
 
+/** The sampling settings a stable-diffusion.cpp recipe renders with, as request fields. */
+export type SdcppRecipeSampling = Pick<
+  StableDiffusionParams,
+  'cfg_scale' | 'sampler_name' | 'scheduler'
+>;
+
+/**
+ * The recipe's CFG scale, sampler and scheduler for the settings the call left out. sd-server
+ * renders with its general defaults (CFG 1, `euler`) instead of the loaded recipe's, which suits
+ * few models (SDXL wants a CFG near 5), so the request carries them.
+ */
+export function sdcppRecipeSampling(
+  model: SdcppModel | undefined,
+  params: StableDiffusionParams,
+): SdcppRecipeSampling {
+  if (!model) {
+    return {};
+  }
+  return {
+    ...(params.cfg_scale == null && model.cfgScale != null && { cfg_scale: model.cfgScale }),
+    ...(params.sampler_name == null && model.sampler && { sampler_name: model.sampler }),
+    ...(params.scheduler == null && model.scheduler && { scheduler: model.scheduler }),
+  };
+}
+
 /**
  * Builds a Stable Diffusion WebUI API request (`txt2img`, or `img2img` when an image is given).
  * The same API is served by AUTOMATIC1111, Forge and stable-diffusion.cpp's `sd-server`; for the
@@ -261,6 +286,8 @@ export type PreparedStableDiffusionRequest =
        * they depend on the model that renders it.
        */
       settings: StableDiffusionSettingsRequest;
+      /** The checked settings; on stable-diffusion.cpp the recipe fills in the sampling ones left out. */
+      params: StableDiffusionParams;
     };
 
 /** Axios config for a request to `requestUrl`, SSRF-guarded when the user set the URL. */
@@ -357,7 +384,7 @@ export async function prepareStableDiffusionRequest(
   });
   const url = `${context.url}${path}`;
   const config = stableDiffusionRequestConfig(context, url, {});
-  return { url, payload, config, backend, settings, ...(image && { image }) };
+  return { url, payload, config, backend, settings, params: check.value, ...(image && { image }) };
 }
 
 /**
@@ -500,9 +527,9 @@ export async function generateStableDiffusionImage(
       )
     ).data;
   /**
-   * The request with the size and steps for the model that renders it, within the limits. Defaults
-   * the catalog does not give (a model outside it, or a recipe without them) are read from the
-   * server, which reports the loaded model's.
+   * The request with the size, steps and sampling settings for the model that renders it, within
+   * the limits. Defaults the catalog does not give (a model outside it, or a recipe without them)
+   * are read from the server, which reports the ones it applies.
    */
   const payloadFor = async (
     model: SdcppModel | undefined,
@@ -526,7 +553,8 @@ export async function generateStableDiffusionImage(
       return { error: result.error.message };
     }
     signal.throwIfAborted();
-    return { payload: { ...request.payload, ...result.value } };
+    const sampling = sdcppRecipeSampling(model, request.params);
+    return { payload: { ...request.payload, ...result.value, ...sampling } };
   };
 
   if (request.backend === 'webui') {

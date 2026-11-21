@@ -182,10 +182,10 @@ describe('resolveStableDiffusionSettings', () => {
   describe('stable-diffusion.cpp txt2img', () => {
     const sdcpp = { backend: 'sdcpp' as const, defaults: recipe, target };
 
-    it('leaves the recipe defaults to the server when they are within the limits', () => {
+    it("sends the recipe's steps, which sd-server would not apply, and leaves it the size", () => {
       expect(resolveStableDiffusionSettings({ ...sdcpp, bounds: bounds() })).toEqual({
         ok: true,
-        value: {},
+        value: { steps: 20 },
       });
     });
 
@@ -203,13 +203,13 @@ describe('resolveStableDiffusionSettings', () => {
           defaults: { width: 1280, height: 720, steps: 20 },
           bounds: bounds(1024),
         }),
-      ).toEqual({ ok: true, value: { width: 1024, height: 576 } });
+      ).toEqual({ ok: true, value: { steps: 20, width: 1024, height: 576 } });
     });
 
     it("rounds the side asked for to the model's multiple and keeps the other default", () => {
       expect(resolveStableDiffusionSettings({ ...sdcpp, width: 500, bounds: bounds() })).toEqual({
         ok: true,
-        value: { width: 512 },
+        value: { steps: 20, width: 512 },
       });
     });
 
@@ -220,7 +220,7 @@ describe('resolveStableDiffusionSettings', () => {
           width: 1536,
           bounds: bounds(2048, 50, 64, 768),
         }),
-      ).toEqual({ ok: true, value: { width: 1536, height: 768 } });
+      ).toEqual({ ok: true, value: { steps: 20, width: 1536, height: 768 } });
     });
 
     it.each([
@@ -272,7 +272,7 @@ describe('resolveStableDiffusionSettings', () => {
           ...asked,
           bounds: bounds(),
         }),
-      ).toEqual({ ok: true, value: expected });
+      ).toEqual({ ok: true, value: { steps: 20, ...expected } });
     });
 
     it.each([
@@ -309,7 +309,7 @@ describe('resolveStableDiffusionSettings', () => {
           target: { longestSide: 2048, multiple: 32 },
           bounds: bounds(1024, 50, 64, 512),
         }),
-      ).toEqual({ ok: true, value: { width: 896, height: 512 } });
+      ).toEqual({ ok: true, value: { steps: 20, width: 896, height: 512 } });
     });
 
     it('sends the default size when the input size is unknown', () => {
@@ -321,7 +321,7 @@ describe('resolveStableDiffusionSettings', () => {
           target,
           bounds: bounds(),
         }),
-      ).toEqual({ ok: true, value: { width: 1024, height: 1024 } });
+      ).toEqual({ ok: true, value: { steps: 20, width: 1024, height: 1024 } });
     });
   });
 

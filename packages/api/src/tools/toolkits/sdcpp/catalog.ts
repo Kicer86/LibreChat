@@ -18,9 +18,14 @@ export interface SdcppModel {
   /** The recipe's own output size, which the server uses when a request gives none. */
   width?: number;
   height?: number;
-  /** The recipe's sampling steps and CFG scale, used when a request gives none. */
+  /**
+   * The recipe's sampling steps, CFG scale, sampler and scheduler. sd-server does not apply them
+   * itself (it renders with its general defaults), so they are sent when a request gives none.
+   */
   steps?: number;
   cfgScale?: number;
+  sampler?: string;
+  scheduler?: string;
 }
 
 export interface SdcppCatalog {
@@ -86,6 +91,8 @@ function parseRecipe(recipe: unknown): SdcppModel | undefined {
   const description = nonEmptyString(recipe.description);
   const steps = positiveInteger(defaults.steps);
   const cfgScale = finiteNumber(defaults.cfg_scale);
+  const sampler = nonEmptyString(defaults.sampling_method);
+  const scheduler = nonEmptyString(defaults.scheduler);
   return {
     id,
     name: nonEmptyString(recipe.name) ?? id,
@@ -97,6 +104,8 @@ function parseRecipe(recipe: unknown): SdcppModel | undefined {
     height: positiveInteger(defaults.height),
     ...(steps && { steps }),
     ...(cfgScale != null && { cfgScale }),
+    ...(sampler && { sampler }),
+    ...(scheduler && { scheduler }),
   };
 }
 

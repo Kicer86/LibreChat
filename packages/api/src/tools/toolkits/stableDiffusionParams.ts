@@ -321,7 +321,8 @@ export function resolveStableDiffusionSettings(
     value.steps = params.steps;
   } else if (defaults.steps == null) {
     return unknown;
-  } else if (webui || defaults.steps > bounds.maxSteps) {
+  } else {
+    /** sd-server renders with its general steps, not the recipe's, unless they are sent. */
     value.steps = Math.min(defaults.steps, bounds.maxSteps);
   }
 

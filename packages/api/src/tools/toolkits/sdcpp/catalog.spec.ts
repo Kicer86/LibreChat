@@ -27,7 +27,14 @@ const recipesResponse = {
       models: { diffusion_model: 'diffusion_models/qwen-image-2.1-Q8_0.gguf' },
       size_multiple: 32,
       video_constraints: null,
-      defaults: { cfg_scale: 1, width: 1024, height: 1024, steps: 20 },
+      defaults: {
+        cfg_scale: 1,
+        width: 1024,
+        height: 1024,
+        steps: 20,
+        sampling_method: 'euler',
+        scheduler: 'simple',
+      },
       effective_features: { img2img: true, init_image: false },
     },
     {
@@ -74,6 +81,8 @@ describe('parseSdcppRecipes', () => {
         height: 1024,
         steps: 20,
         cfgScale: 1,
+        sampler: 'euler',
+        scheduler: 'simple',
       },
       {
         id: 'local-ltx25-distilled-q4',

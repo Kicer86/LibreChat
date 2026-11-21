@@ -32,6 +32,16 @@ const recipes = [
   recipe('qwen', 'qwen.gguf'),
   recipe('flux', 'flux.gguf', { defaults: { width: 768, height: 768, steps: 20 } }),
   recipe('ltx', 'ltx.gguf', { defaults: { video_frames: 33 } }),
+  recipe('sdxl', 'sdxl.gguf', {
+    defaults: {
+      width: 1024,
+      height: 1024,
+      steps: 24,
+      cfg_scale: 5,
+      sampling_method: 'dpm++2m',
+      scheduler: 'karras',
+    },
+  }),
 ];
 const status = (id: string, file: string) => ({
   recipe: id,
@@ -568,10 +578,35 @@ describe('generateStableDiffusionImage', () => {
       expect(sent('/txt2img')).toMatchObject({ steps: 10, width: 512, height: 512 });
     });
 
-    it("leaves a recipe's defaults within the limits to the server", async () => {
+    it("sends the recipe's steps, which sd-server would not apply, and leaves it the size", async () => {
       serve({ id: 'qwen', file: 'qwen.gguf' });
       await generateStableDiffusionImage({ prompt: 'test' }, { url, req: req() });
-      expect(sent('/txt2img')).toEqual({ prompt: 'test', negative_prompt: undefined });
+      expect(sent('/txt2img')).toEqual({ prompt: 'test', negative_prompt: undefined, steps: 20 });
+    });
+
+    it("sends the recipe's CFG scale, sampler and scheduler unless the call sets them", async () => {
+      serve({ id: 'sdxl', file: 'sdxl.gguf' });
+      await generateStableDiffusionImage({ prompt: 'test' }, { url, req: req() });
+      expect(sent('/txt2img')).toEqual({
+        prompt: 'test',
+        negative_prompt: undefined,
+        steps: 24,
+        cfg_scale: 5,
+        sampler_name: 'dpm++2m',
+        scheduler: 'karras',
+      });
+
+      mockPost.mockClear();
+      await generateStableDiffusionImage(
+        { prompt: 'test', cfg_scale: 2, sampler: 'euler', steps: 6 },
+        { url, req: req() },
+      );
+      expect(sent('/txt2img')).toMatchObject({
+        steps: 6,
+        cfg_scale: 2,
+        sampler_name: 'euler',
+        scheduler: 'karras',
+      });
     });
 
     it("lowers the loaded model's defaults when the model list cannot be read", async () => {

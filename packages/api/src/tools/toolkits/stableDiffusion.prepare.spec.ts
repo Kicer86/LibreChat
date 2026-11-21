@@ -49,6 +49,7 @@ describe('prepareStableDiffusionRequest', () => {
           maxSteps: 50,
         },
       },
+      params: {},
     });
     expect(applySSRFSafeAgentIfDirect).not.toHaveBeenCalled();
   });
