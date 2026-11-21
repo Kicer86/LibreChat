@@ -68,6 +68,7 @@ jest.mock('~/server/controllers/agents/callbacks', () => ({
   createToolEndCallback: jest.fn(() => mockArtifactToolEndCallback),
   createAttachmentEmitter: jest.fn(() => jest.fn()),
   createPtcProgressEmitter: jest.fn(() => jest.fn()),
+  createToolProgressEmitter: jest.fn(() => jest.fn()),
   createBackgroundCodeResultHandler: jest.fn(() => jest.fn()),
   getDefaultHandlers: jest.fn((opts) => {
     capturedDefaultHandlerOptions = opts;
@@ -575,6 +576,7 @@ describe('initializeClient — processAgent ACL gate', () => {
     const {
       createAttachmentEmitter,
       createPtcProgressEmitter,
+      createToolProgressEmitter,
       createToolEndCallback,
     } = require('~/server/controllers/agents/callbacks');
     mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
@@ -612,6 +614,11 @@ describe('initializeClient — processAgent ACL gate', () => {
     /** The PTC trace emitter is generation-fenced like every other resumable
      *  emitter; a stale epoch would leak one run's inner calls into the next. */
     expect(createPtcProgressEmitter).toHaveBeenCalledWith({
+      res: {},
+      streamId: 'conv_1',
+      jobCreatedAt: 1234,
+    });
+    expect(createToolProgressEmitter).toHaveBeenCalledWith({
       res: {},
       streamId: 'conv_1',
       jobCreatedAt: 1234,

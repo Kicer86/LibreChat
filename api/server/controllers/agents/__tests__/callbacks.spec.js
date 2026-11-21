@@ -711,6 +711,43 @@ describe('createPtcProgressEmitter', () => {
   });
 });
 
+describe('createToolProgressEmitter', () => {
+  const progress = { tool_call_id: 'call_sd', stage: 'sampling', completed: 2, total: 4 };
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('emits the report on the resumable job stream', () => {
+    const { GenerationJobManager } = require('@librechat/api');
+    const { createToolProgressEmitter } = require('../callbacks');
+    const emit = createToolProgressEmitter({
+      res: { write: jest.fn() },
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+    });
+
+    emit(progress);
+
+    expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
+      'conversation-1',
+      { event: StepEvents.ON_TOOL_PROGRESS, data: progress },
+      { expectedCreatedAt: 1234 },
+    );
+  });
+
+  it('writes to the live response when no stream id is in play', () => {
+    const { sendEvent } = require('@librechat/api');
+    const { createToolProgressEmitter } = require('../callbacks');
+    const res = { write: jest.fn(), headersSent: true, writableEnded: false };
+
+    createToolProgressEmitter({ res })(progress);
+
+    expect(sendEvent).toHaveBeenCalledWith(res, {
+      event: StepEvents.ON_TOOL_PROGRESS,
+      data: progress,
+    });
+  });
+});
+
 describe('createToolEndCallback', () => {
   let req, res, artifactPromises, createToolEndCallback;
   let logger;

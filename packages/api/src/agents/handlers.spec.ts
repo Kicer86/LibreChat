@@ -20,6 +20,7 @@ import type {
 import type { CodeWorkspaceOperation, PtcToolCallEvent } from 'librechat-data-provider';
 import type { CodeExecutionContext } from './execution';
 import type { BackgroundToolWakeupRegistration } from './backgroundCompletion';
+import type { ToolProgressReporter } from './handlers';
 import {
   createOwnedToolEndHandler,
   createToolExecuteHandler,
@@ -404,6 +405,53 @@ describe('getAttachmentOwnership', () => {
 });
 
 describe('createToolExecuteHandler', () => {
+  describe('tool progress', () => {
+    const progressTool = (reported: Array<Record<string, unknown>>) => {
+      const capturedConfigs: Record<string, unknown>[] = [];
+      const tool = createMockTool('stable-diffusion', capturedConfigs);
+      tool.invoke.mockImplementation(async (_args: unknown, config: Record<string, unknown>) => {
+        const toolCall = config.toolCall as Record<string, unknown>;
+        reported.push({ hasReporter: typeof toolCall.reportProgress === 'function' });
+        (toolCall.reportProgress as ToolProgressReporter | undefined)?.({
+          stage: 'sampling',
+          completed: 1,
+          total: 4,
+        });
+        return { content: 'done', artifact: { session_id: 'none', files: [] } };
+      });
+      const loadTools: ToolExecuteOptions['loadTools'] = jest.fn(async () => ({
+        loadedTools: [tool] as never[],
+      }));
+      return loadTools;
+    };
+
+    it("gives a foreground call a reporter bound to the call's id", async () => {
+      const reported: Array<Record<string, unknown>> = [];
+      const emitToolProgress = jest.fn();
+      const handler = createToolExecuteHandler({
+        loadTools: progressTool(reported),
+        emitToolProgress,
+      });
+      await invokeHandler(handler, [{ id: 'call_sd', name: 'stable-diffusion', args: {} }]);
+
+      expect(reported).toEqual([{ hasReporter: true }]);
+      expect(emitToolProgress).toHaveBeenCalledWith({
+        stage: 'sampling',
+        completed: 1,
+        total: 4,
+        tool_call_id: 'call_sd',
+        runId: undefined,
+      });
+    });
+
+    it('gives no reporter when the transport cannot show progress', async () => {
+      const reported: Array<Record<string, unknown>> = [];
+      const handler = createToolExecuteHandler({ loadTools: progressTool(reported) });
+      await invokeHandler(handler, [{ id: 'call_sd', name: 'stable-diffusion', args: {} }]);
+      expect(reported).toEqual([{ hasReporter: false }]);
+    });
+  });
+
   describe('code execution session context passthrough', () => {
     it('passes session_id and _injected_files from codeSessionContext to toolCallConfig', async () => {
       const capturedConfigs: Record<string, unknown>[] = [];

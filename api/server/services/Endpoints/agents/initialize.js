@@ -82,6 +82,7 @@ const {
   createToolEndCallback,
   createAttachmentEmitter,
   createPtcProgressEmitter,
+  createToolProgressEmitter,
   createBackgroundCodeResultHandler,
   getDefaultHandlers,
 } = require('~/server/controllers/agents/callbacks');
@@ -580,6 +581,7 @@ const initializeClientWithProvider = async ({
     },
     emitAttachment: createAttachmentEmitter({ res, streamId, jobCreatedAt }),
     emitPtcProgress: createPtcProgressEmitter({ res, streamId, jobCreatedAt }),
+    emitToolProgress: createToolProgressEmitter({ res, streamId, jobCreatedAt }),
     onSkillResolved: (skill, { agentId }) => {
       if (agentId === primaryConfig.id) {
         invokedSkillIdentities.set(skill.id, skill);

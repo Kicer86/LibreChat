@@ -30,11 +30,17 @@ import type {
   ToolEndCallback as SdkToolEndCallback,
 } from '@librechat/agents';
 import type {
+  CodeEnvRef,
+  ToolProgress,
+  PtcToolCallEvent,
+  ToolProgressEvent,
+  CodeWorkspaceOperation,
+} from 'librechat-data-provider';
+import type {
   BackgroundToolResultClaim,
   DeleteSkillResult,
   ValidationIssue,
 } from '@librechat/data-schemas';
-import type { CodeEnvRef, CodeWorkspaceOperation, PtcToolCallEvent } from 'librechat-data-provider';
 import type { StructuredToolInterface } from '@librechat/agents/langchain/tools';
 import type { CodeEnvFile, CodeSessionContext } from '@librechat/agents';
 import type {
@@ -292,6 +298,12 @@ export function createOwnedToolEndHandler(
   };
 }
 
+/**
+ * How a running tool reports its progress to the call's card: `config.toolCall.reportProgress`,
+ * present on foreground calls of transports that carry the LibreChat step stream.
+ */
+export type ToolProgressReporter = (progress: ToolProgress) => void;
+
 export interface ToolExecuteOptions {
   /** Host observer, called only after authoring has bound an authorized identity. */
   onSkillAuthored?: (binding: Pick<AuthoredSkillBinding, 'name' | 'id' | 'primed'>) => void;
@@ -420,6 +432,12 @@ export interface ToolExecuteOptions {
    * instrumentation.
    */
   emitPtcProgress?: (event: PtcToolCallEvent) => void;
+  /**
+   * Emits an `on_tool_progress` SSE event for a foreground tool call. A tool reports through
+   * `config.toolCall.reportProgress` (a {@link ToolProgressReporter}), which is set only when this
+   * is; transports without the LibreChat step stream leave it out.
+   */
+  emitToolProgress?: (event: ToolProgressEvent) => void;
   /**
    * Loads a skill by name with ACL constraint (returns full body for injection).
    *
@@ -5687,6 +5705,7 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
     backgroundToolCompletion,
     emitAttachment,
     emitPtcProgress,
+    emitToolProgress,
     subagentTasks,
     runFiles,
     ordinaryToolCancellation = false,
@@ -7647,6 +7666,17 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
                   let normalizedArgs: unknown = tc.args;
                   try {
                     const toolCallConfig = buildToolCallConfig(tc, mergedConfigurable);
+                    if (emitToolProgress) {
+                      const runId = (metadata as Record<string, unknown>)?.run_id as
+                        | string
+                        | undefined;
+                      const reportProgress: ToolProgressReporter = (progress) => {
+                        if (!(runSignal?.reason instanceof SteerToolInterrupt)) {
+                          emitToolProgress({ ...progress, tool_call_id: tc.id, runId });
+                        }
+                      };
+                      toolCallConfig.reportProgress = reportProgress;
+                    }
 
                     if (
                       tc.name === Constants.BASH_PROGRAMMATIC_TOOL_CALLING ||

@@ -1196,6 +1196,39 @@ function createPtcProgressEmitter({ res, streamId = null, jobCreatedAt }) {
 }
 
 /**
+ * Streams `on_tool_progress` reports from a running tool call, so its card
+ * shows where a long generation is.
+ *
+ * Fire-and-forget like the PTC trace emitter: a closed stream drops the
+ * report rather than failing the tool call that produced it.
+ *
+ * @param {Object} params
+ * @param {ServerResponse} params.res
+ * @param {string | null} [params.streamId]
+ * @param {number} [params.jobCreatedAt]
+ * @returns {(event: import('librechat-data-provider').ToolProgressEvent) => void}
+ */
+function createToolProgressEmitter({ res, streamId = null, jobCreatedAt }) {
+  return (event) => {
+    if (!event || !isStreamWritable(res, streamId)) {
+      return;
+    }
+    const payload = { event: StepEvents.ON_TOOL_PROGRESS, data: event };
+    if (streamId) {
+      /* The tool reports from synchronous code that cannot observe a
+       * rejected promise, so a failed emit is dropped here. */
+      Promise.resolve(
+        GenerationJobManager.emitChunk(streamId, payload, { expectedCreatedAt: jobCreatedAt }),
+      ).catch(() => {
+        /* dropped: progress is best-effort */
+      });
+      return;
+    }
+    sendEvent(res, payload);
+  };
+}
+
+/**
  * Leading sub-second retries cover the common case of a fast background task
  * settling moments before the dispatch turn finalizes its message row — an
  * immediate follow-up turn should find the attachments already anchored.
@@ -1609,6 +1642,7 @@ module.exports = {
   createToolEndCallback,
   createAttachmentEmitter,
   createPtcProgressEmitter,
+  createToolProgressEmitter,
   createBackgroundCodeResultHandler,
   isStreamWritable,
   markSummarizationUsage,
