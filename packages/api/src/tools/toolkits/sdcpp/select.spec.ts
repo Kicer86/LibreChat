@@ -15,7 +15,9 @@ const flux = model('flux');
 const textOnly = model('text-only', { acceptsImage: false });
 const ltx = model('ltx', { mode: 'video' });
 const wan = model('wan', { mode: 'video', acceptsImage: false });
-const models = [textOnly, qwen, flux, ltx, wan];
+const endOnly = model('end-only', { mode: 'video', acceptsImage: false, acceptsEndImage: true });
+const ltxEnd = model('ltx-end', { mode: 'video', acceptsEndImage: true });
+const models = [textOnly, qwen, flux, ltx, wan, endOnly, ltxEnd];
 const catalog = (loaded?: string): SdcppCatalog => ({ models, ...(loaded && { loaded }) });
 
 describe('allowedSdcppModels', () => {
@@ -88,7 +90,7 @@ describe('chooseSdcppModel', () => {
     expect(
       chooseSdcppModel({
         catalog: catalog('qwen'),
-        config: { exclude: ['ltx', 'wan'] },
+        config: { exclude: ['ltx', 'wan', 'end-only', 'ltx-end'] },
         video: true,
       }),
     ).toEqual({
@@ -102,6 +104,71 @@ describe('chooseSdcppModel', () => {
       chooseSdcppModel({ catalog: catalog('qwen'), requested: 'text-only', withImage: true }),
     ).toMatchObject({ ok: false, error: { code: 'no_image_input' } });
   });
+
+  it.each([
+    ['wan', true, false, 'no_image_input', /cannot start a clip from an image/],
+    ['ltx', false, true, 'no_end_image_input', /cannot end a clip on an image/],
+    ['end-only', true, true, 'no_image_input', /cannot start a clip/],
+  ])(
+    'refuses the requested video model %s (start frame: %s, end frame: %s)',
+    (requested, withImage, withEndImage, code, message) => {
+      expect(
+        chooseSdcppModel({ catalog: catalog('qwen'), requested, withImage, withEndImage }),
+      ).toMatchObject({ ok: false, error: { code, message: expect.stringMatching(message) } });
+    },
+  );
+
+  it('uses a requested video model that takes the start and end frames', () => {
+    expect(
+      chooseSdcppModel({
+        catalog: catalog('qwen'),
+        requested: 'ltx-end',
+        withImage: true,
+        withEndImage: true,
+      }),
+    ).toEqual({ ok: true, model: ltxEnd });
+  });
+
+  it('chooses a video model that takes the frames given', () => {
+    const choose = (loaded: string, withImage: boolean, withEndImage: boolean) =>
+      chooseSdcppModel({ catalog: catalog(loaded), video: true, withImage, withEndImage });
+    expect(choose('wan', true, false)).toEqual({ ok: true, model: ltx });
+    expect(choose('wan', false, true)).toEqual({ ok: true, model: endOnly });
+    expect(choose('end-only', true, true)).toEqual({ ok: true, model: ltxEnd });
+    expect(choose('ltx-end', true, false)).toEqual({ ok: true, model: ltxEnd });
+    expect(
+      chooseSdcppModel({
+        catalog: catalog('qwen'),
+        config: { defaultVideo: 'wan' },
+        video: true,
+        withImage: true,
+      }),
+    ).toEqual({ ok: true, model: ltx });
+  });
+
+  it.each([
+    [true, false, ['ltx', 'ltx-end'], 'No available video model can start a clip from an image.'],
+    [false, true, ['end-only', 'ltx-end'], 'No available video model can end a clip on an image.'],
+    [
+      true,
+      true,
+      ['ltx-end'],
+      'No available video model can start a clip from an image and end it on another.',
+    ],
+  ])(
+    'reports when no video model takes the frames (start: %s, end: %s)',
+    (withImage, withEndImage, exclude, message) => {
+      expect(
+        chooseSdcppModel({
+          catalog: catalog('qwen'),
+          config: { exclude },
+          video: true,
+          withImage,
+          withEndImage,
+        }),
+      ).toEqual({ ok: false, error: { code: 'no_model', message } });
+    },
+  );
 
   it('keeps the loaded model when it can serve the request', () => {
     expect(

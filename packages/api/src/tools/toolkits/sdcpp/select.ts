@@ -5,7 +5,7 @@ type SdcppModelsConfig = NonNullable<TStableDiffusionConfig['models']>;
 
 /** Why no model could be chosen; the message is written for the model calling the tool. */
 export type SdcppModelChoiceError = {
-  code: 'unknown_model' | 'wrong_mode' | 'no_image_input' | 'no_model';
+  code: 'unknown_model' | 'wrong_mode' | 'no_image_input' | 'no_end_image_input' | 'no_model';
   message: string;
 };
 
@@ -38,8 +38,10 @@ export interface ChooseSdcppModelParams {
   config?: SdcppModelsConfig;
   /** Model ID the tool was called with. */
   requested?: string;
-  /** Whether the request starts from an input image (img2img). */
+  /** Whether the request starts from an input image (img2img, or a clip's first frame). */
   withImage?: boolean;
+  /** Whether the clip ends on an input image (its last frame); only video models can. */
+  withEndImage?: boolean;
   /**
    * Whether the calling model asked for a video clip (`true`) or an image (`false`). Left out,
    * a requested model's own mode applies, and without one an image is made.
@@ -49,8 +51,54 @@ export interface ChooseSdcppModelParams {
   readyOutsideCatalog?: boolean;
 }
 
-const fits = (model: SdcppModel, mode: SdcppModelMode, withImage: boolean) =>
-  model.mode === mode && (!withImage || model.acceptsImage);
+/** The input images a request brings. */
+interface ImageNeeds {
+  start: boolean;
+  end: boolean;
+}
+
+const fits = (model: SdcppModel, mode: SdcppModelMode, needs: ImageNeeds) =>
+  model.mode === mode &&
+  (!needs.start || model.acceptsImage) &&
+  (!needs.end || model.acceptsEndImage === true);
+
+/** Why the requested `model` cannot take the request's images, or `undefined` when it can. */
+function imageInputError(model: SdcppModel, needs: ImageNeeds): SdcppModelChoiceError | undefined {
+  if (needs.start && !model.acceptsImage) {
+    return {
+      code: 'no_image_input',
+      message:
+        model.mode === 'video'
+          ? `Model "${model.id}" cannot start a clip from an image. Choose a video model that starts from an image, or omit "image_ids".`
+          : `Model "${model.id}" cannot change an existing image. Choose a model that supports img2img.`,
+    };
+  }
+  if (needs.end && model.acceptsEndImage !== true) {
+    return {
+      code: 'no_end_image_input',
+      message: `Model "${model.id}" cannot end a clip on an image. Choose a video model that ends on an image, or omit "end_image_id".`,
+    };
+  }
+  return undefined;
+}
+
+/** Why no allowed model can serve the request. */
+function noModelMessage(mode: SdcppModelMode, needs: ImageNeeds): string {
+  if (mode === 'image') {
+    return needs.start
+      ? 'No available model can change an existing image.'
+      : 'No available model can generate images.';
+  }
+  if (needs.start && needs.end) {
+    return 'No available video model can start a clip from an image and end it on another.';
+  }
+  if (needs.start) {
+    return 'No available video model can start a clip from an image.';
+  }
+  return needs.end
+    ? 'No available video model can end a clip on an image.'
+    : 'No available model can make video.';
+}
 
 function wrongMode(requested: string, mode: SdcppModelMode): SdcppModelChoice {
   return {
@@ -67,7 +115,7 @@ function wrongMode(requested: string, mode: SdcppModelMode): SdcppModelChoice {
 
 /**
  * Chooses the model for a request, an image or a video clip. A requested model must be allowed
- * and able to serve the request. Without one, the loaded model is kept when it can serve it, so no
+ * and able to serve the request, taking its start and end images. Without one, the loaded model is kept when it can serve it, so no
  * load is needed; otherwise, and when no model is ready at all, the default for the mode
  * (`defaultImage`, `defaultVideo`) is used, then the first allowed model that fits.
  */
@@ -76,10 +124,12 @@ export function chooseSdcppModel({
   config,
   requested,
   withImage = false,
+  withEndImage = false,
   video,
   readyOutsideCatalog = false,
 }: ChooseSdcppModelParams): SdcppModelChoice {
   const allowed = allowedSdcppModels(catalog.models, config);
+  const needs: ImageNeeds = { start: withImage, end: withEndImage };
 
   if (requested) {
     const model = allowed.find((candidate) => candidate.id === requested);
@@ -95,25 +145,17 @@ export function chooseSdcppModel({
     if (video != null && model.mode !== (video ? 'video' : 'image')) {
       return wrongMode(requested, model.mode);
     }
-    if (!fits(model, model.mode, withImage)) {
-      return {
-        ok: false,
-        error: {
-          code: 'no_image_input',
-          message: `Model "${requested}" cannot change an existing image. Choose a model that supports img2img.`,
-        },
-      };
-    }
-    return { ok: true, model };
+    const error = imageInputError(model, needs);
+    return error ? { ok: false, error } : { ok: true, model };
   }
 
-  const mode: SdcppModelMode = video ? 'video' : 'image';
+  const mode: SdcppModelMode = video || withEndImage ? 'video' : 'image';
   const configured = mode === 'video' ? config?.defaultVideo : config?.defaultImage;
 
   const loaded = catalog.loaded
     ? catalog.models.find((model) => model.id === catalog.loaded)
     : undefined;
-  if (loaded && allowed.includes(loaded) && fits(loaded, mode, withImage)) {
+  if (loaded && allowed.includes(loaded) && fits(loaded, mode, needs)) {
     return { ok: true, model: loaded };
   }
   /** A model outside the catalog cannot be told to make video, so it serves images only. */
@@ -122,16 +164,10 @@ export function chooseSdcppModel({
   }
 
   const fallback =
-    allowed.find((model) => model.id === configured && fits(model, mode, withImage)) ??
-    allowed.find((model) => fits(model, mode, withImage));
+    allowed.find((model) => model.id === configured && fits(model, mode, needs)) ??
+    allowed.find((model) => fits(model, mode, needs));
   if (fallback) {
     return { ok: true, model: fallback };
   }
-  let message = 'No available model can generate images.';
-  if (mode === 'video') {
-    message = 'No available model can make video.';
-  } else if (withImage) {
-    message = 'No available model can change an existing image.';
-  }
-  return { ok: false, error: { code: 'no_model', message } };
+  return { ok: false, error: { code: 'no_model', message: noModelMessage(mode, needs) } };
 }
