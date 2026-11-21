@@ -532,14 +532,14 @@ describe('image tools - agent mode ToolMessage format', () => {
       expect(axios.post.mock.calls[0][1]).toMatchObject({ steps: 22, cfg_scale: 4.5 });
     });
 
-    it('leaves steps, CFG scale and size to stable-diffusion.cpp model defaults', async () => {
+    it('leaves the size to the stable-diffusion.cpp recipe, with fixed steps and CFG scale', async () => {
       axios.get.mockResolvedValue({ status: 200, data: { current_mode: 'img_gen', defaults: {} } });
       const sd = new StableDiffusionAPI({ isAgent: true, override: true, userId: 'user-1' });
       await sd.invoke(makeToolCall('stable-diffusion', { prompt: 'a box' }));
 
       expect(axios.post).toHaveBeenCalledWith(
         'http://localhost:7860/sdapi/v1/txt2img',
-        { prompt: 'a box' },
+        { prompt: 'a box', cfg_scale: 4.5, steps: 22 },
         expect.any(Object),
       );
     });

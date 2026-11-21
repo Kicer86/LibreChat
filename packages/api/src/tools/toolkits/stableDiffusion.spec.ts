@@ -64,10 +64,10 @@ describe('buildStableDiffusionRequest', () => {
     expect(payload).toMatchObject({ width: 1024, height: 1024 });
   });
 
-  it('leaves steps, CFG scale and the size to stable-diffusion.cpp model defaults', () => {
+  it('leaves the txt2img size to the stable-diffusion.cpp recipe, with fixed steps and CFG scale', () => {
     expect(buildStableDiffusionRequest({ prompt: 'a cat', backend: 'sdcpp' })).toEqual({
       path: '/sdapi/v1/txt2img',
-      payload: { prompt: 'a cat' },
+      payload: { prompt: 'a cat', cfg_scale: 4.5, steps: 22 },
     });
   });
 
@@ -77,9 +77,7 @@ describe('buildStableDiffusionRequest', () => {
       image: input(900, 1600),
       backend: 'sdcpp',
     });
-    expect(payload).toMatchObject({ width: 576, height: 1024 });
-    expect(payload).not.toHaveProperty('steps');
-    expect(payload).not.toHaveProperty('cfg_scale');
+    expect(payload).toMatchObject({ width: 576, height: 1024, cfg_scale: 4.5, steps: 22 });
   });
 });
 

@@ -12,17 +12,25 @@ const IMAGE_SIZE = 1024;
 /** img2img dimensions are rounded to this multiple, which every common model accepts. */
 const SIZE_MULTIPLE = 64;
 
+/**
+ * Sent to every server. sd-server renders omitted steps and CFG scale with its general defaults
+ * (20 steps, CFG 1), not the loaded recipe's, which suits few models.
+ */
 const GENERATION_DEFAULTS = {
   cfg_scale: 4.5,
   steps: 22,
+};
+
+/** The txt2img size for other WebUI servers, which fall back to SD 1.5-era 512² without it. */
+const WEBUI_IMAGE_SIZE = {
   width: IMAGE_SIZE,
   height: IMAGE_SIZE,
 };
 
 /**
- * The server behind `SD_WEBUI_URL`. stable-diffusion.cpp's `sd-server` fills omitted generation
- * parameters from the loaded model's own defaults, so it gets no hardcoded ones; other WebUI
- * servers (AUTOMATIC1111, Forge) fall back to SD 1.5-era values and keep getting ours.
+ * The server behind `SD_WEBUI_URL`. stable-diffusion.cpp's `sd-server` renders an omitted txt2img
+ * size at the loaded recipe's own size, so it gets none; other WebUI servers (AUTOMATIC1111,
+ * Forge) keep getting ours.
  */
 export type StableDiffusionBackend = 'sdcpp' | 'webui';
 
@@ -129,7 +137,7 @@ export function fitStableDiffusionSize(
 /**
  * Builds a Stable Diffusion WebUI API request (`txt2img`, or `img2img` when an image is given).
  * The same API is served by AUTOMATIC1111, Forge and stable-diffusion.cpp's `sd-server`; for the
- * latter, steps, CFG scale and the txt2img size are left to the loaded model's defaults.
+ * latter, the txt2img size is left to the loaded recipe.
  */
 export function buildStableDiffusionRequest({
   prompt,
@@ -138,9 +146,9 @@ export function buildStableDiffusionRequest({
   denoising_strength,
   backend = 'webui',
 }: StableDiffusionRequestParams): StableDiffusionRequest {
-  const payload: Record<string, unknown> = { prompt, negative_prompt };
+  const payload: Record<string, unknown> = { prompt, negative_prompt, ...GENERATION_DEFAULTS };
   if (backend === 'webui') {
-    Object.assign(payload, GENERATION_DEFAULTS);
+    Object.assign(payload, WEBUI_IMAGE_SIZE);
   }
   if (!image) {
     return { path: '/sdapi/v1/txt2img', payload };
