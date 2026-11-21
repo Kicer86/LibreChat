@@ -350,10 +350,11 @@ describe('buildSdcppVideoBody', () => {
     });
   });
 
-  it("leaves the settings not asked for to the recipe's defaults", () => {
+  it('leaves out the settings not asked for, but asks for a random seed', () => {
     expect(buildSdcppVideoBody({ prompt: 'a cat', negative_prompt: '' }, { frames: 121 })).toEqual({
       prompt: 'a cat',
       video_frames: 121,
+      seed: -1,
       output_format: 'webp',
     });
   });

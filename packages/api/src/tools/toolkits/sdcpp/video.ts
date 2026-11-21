@@ -252,10 +252,18 @@ export interface SdcppVideoSettings {
 }
 
 /**
+ * Seed sent when the calling model gave none. sd-server's native API takes an omitted seed from
+ * the recipe (42), so every call would render the same noise; `-1` asks it for a random one, as
+ * the WebUI API does for an omitted seed.
+ */
+export const SDCPP_RANDOM_SEED = -1;
+
+/**
  * The `vid_gen` body for a clip: the prompt, size and seed as top-level fields, the sampling
  * settings nested the way sd-server's native schema takes them (flat `steps` or `cfg_scale` are
- * ignored), and an animated WebP as the output, which browsers play in an `<img>`. Settings left
- * out keep the loaded recipe's defaults.
+ * ignored), and an animated WebP as the output, which browsers play in an `<img>`. Other settings
+ * left out get sd-server's own defaults (for steps, CFG scale and the sampler not the recipe's, so
+ * the caller fills those in); an omitted seed is random.
  */
 export function buildSdcppVideoBody(
   settings: SdcppVideoSettings,
@@ -275,7 +283,7 @@ export function buildSdcppVideoBody(
     ...(height != null && { height }),
     video_frames: clip.frames,
     ...(clip.fps != null && { fps: clip.fps }),
-    ...(seed != null && { seed }),
+    seed: seed ?? SDCPP_RANDOM_SEED,
     output_format: 'webp',
     ...(Object.keys(sampleParams).length > 0 && { sample_params: sampleParams }),
   };

@@ -768,6 +768,7 @@ describe('generateStableDiffusionImage', () => {
         width: 512,
         video_frames: 17,
         fps: 24,
+        seed: -1,
         output_format: 'webp',
         sample_params: { sample_steps: 4, guidance: { txt_cfg: 1.5 } },
       });
