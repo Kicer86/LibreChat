@@ -51,6 +51,7 @@ export enum StepEvents {
   ON_SUBAGENT_UPDATE = 'on_subagent_update',
   ON_SANDBOX_STARTING = 'on_sandbox_starting',
   ON_PTC_TOOL_CALL = 'on_ptc_tool_call',
+  ON_TOOL_PROGRESS = 'on_tool_progress',
 }
 
 /** Payload for {@link StepEvents.ON_SANDBOX_STARTING} — the stateful code
@@ -83,6 +84,32 @@ export type PtcToolCallEvent = {
   error?: string;
   /** Wall-clock time the inner call took. Settle events only. */
   durationMs?: number;
+  runId?: string;
+};
+
+/**
+ * Where a long-running tool call is, as the tool reports it while it works. The
+ * UI labels `stage` itself, so it is a stable code, not display text.
+ */
+export type ToolProgress = {
+  /** What the tool is doing, e.g. `queued`, `loading_model`, `sampling`. */
+  stage: string;
+  /** Share of the whole call done, from 0 to 1, when the tool can tell. */
+  progress?: number;
+  /** Units of this stage done, of `total` (e.g. sampling steps). */
+  completed?: number;
+  total?: number;
+  /** Which of `items` the stage works on, from 1 (e.g. the image of a batch). */
+  item?: number;
+  items?: number;
+  /** Jobs ahead of this one, while it waits in a queue. */
+  queuePosition?: number;
+};
+
+/** Payload for {@link StepEvents.ON_TOOL_PROGRESS}: one progress report for a tool call. */
+export type ToolProgressEvent = ToolProgress & {
+  /** The tool call whose card shows the progress. */
+  tool_call_id: string;
   runId?: string;
 };
 

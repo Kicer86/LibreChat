@@ -9,6 +9,7 @@ import type {
   SubagentUpdateEvent,
   TTokenUsageEvent,
   PtcToolCallEvent,
+  ToolProgressEvent,
   TContextUsageEvent,
   TSteerAppliedEvent,
   TSteerUpdatedEvent,
@@ -142,7 +143,8 @@ export type ChatStepFrame =
   | { event: StepEvents.ON_SUMMARIZE_COMPLETE; data: Agents.SummarizeCompleteEvent }
   | { event: StepEvents.ON_SUBAGENT_UPDATE; data: SubagentUpdateEvent }
   | { event: StepEvents.ON_SANDBOX_STARTING; data: SandboxStartingEvent }
-  | { event: StepEvents.ON_PTC_TOOL_CALL; data: PtcToolCallEvent };
+  | { event: StepEvents.ON_PTC_TOOL_CALL; data: PtcToolCallEvent }
+  | { event: StepEvents.ON_TOOL_PROGRESS; data: ToolProgressEvent };
 
 /** Any `{ event, data }` frame: step events plus the named side channels. */
 export type ChatEventFrame =
