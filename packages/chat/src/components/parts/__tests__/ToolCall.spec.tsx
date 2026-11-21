@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import React from 'react';
+import { Provider, createStore } from 'jotai';
 import { Tools, Constants } from 'librechat-data-provider';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { ToolCallChrome } from '../../../react/host';
@@ -10,9 +11,11 @@ import {
   SoleToolContext,
   GeneratedToolLabelContext,
 } from '../../../react/parts/disclosure';
+import { toolProgressByToolCallId, toolProgressKey } from '../../../react/stream/progress';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { translate } from '../../../__fixtures__/toolCallLocale';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { MessageContext } from '../../../react/message';
 import { ToolAuthWarningContext } from '../auth';
 import ToolCall from '../ToolCall';
 
@@ -117,6 +120,56 @@ describe('ToolCall', () => {
     jest.clearAllMocks();
     bindMCPOAuth.mockResolvedValue({ success: true });
     bindActionOAuth.mockResolvedValue({ success: true });
+  });
+
+  describe('reported progress', () => {
+    const running = {
+      ...mockProps,
+      output: null,
+      initialProgress: 0.1,
+      isSubmitting: true,
+      toolCallId: 'call_sd',
+      toolDispatchedAt: 1_000,
+    };
+    const renderInMessage = (
+      props: React.ComponentProps<typeof ToolCall>,
+      report: Record<string, unknown> | null,
+      reportMessageId = 'resp-1',
+    ) => {
+      const store = createStore();
+      store.set(
+        toolProgressByToolCallId(toolProgressKey(reportMessageId, 'call_sd')),
+        report as never,
+      );
+      return render(
+        <Provider store={store}>
+          <MessageContext.Provider value={{ messageId: 'resp-1', isExpanded: false }}>
+            <Host>
+              <ToolCall {...props} />
+            </Host>
+          </MessageContext.Provider>
+        </Provider>,
+      );
+    };
+
+    it('shows the step a running call reports beside its label', () => {
+      renderInMessage(running, { stage: 'sampling', progress: 0.5, completed: 3, total: 8 });
+      expect(screen.getByText('Calling testFunction')).toBeInTheDocument();
+      expect(screen.getByTestId('subtitle').textContent).toBe('com_ui_tool_progress_step');
+    });
+
+    it("ignores another message's report for the same call id", () => {
+      renderInMessage(running, { stage: 'sampling', completed: 3, total: 8 }, 'resp-2');
+      expect(screen.queryByTestId('subtitle')).toBeNull();
+    });
+
+    it('drops the progress once the call has finished', () => {
+      renderInMessage(
+        { ...running, output: 'done', initialProgress: 1, isSubmitting: false },
+        { stage: 'sampling', completed: 8, total: 8 },
+      );
+      expect(screen.queryByTestId('subtitle')).toBeNull();
+    });
   });
 
   describe('tool preparation feedback', () => {

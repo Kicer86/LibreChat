@@ -1,4 +1,5 @@
 import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useAtomValue } from 'jotai';
 import { Button } from '@librechat/client';
 import {
   Constants,
@@ -16,12 +17,15 @@ import {
   GeneratedToolLabelContext,
   toolPanelSpacingClassName,
 } from '../../react/parts/disclosure';
+import { toolProgressByToolCallId, toolProgressKey } from '../../react/stream/progress';
 import { isError, firstErrorLine, hasRenderableOutput } from '../../core/parts/output';
 import useLazyCollapseBody from '../../react/parts/useLazyCollapseBody';
 import { resolveToolCallPhase } from '../../core/parts/toolCallPhase';
 import { isToolCallPreparing } from '../../core/parts/preparation';
 import { getToolDisplayLabel } from '../../core/parts/toolLabels';
+import { formatToolProgress } from '../../core/parts/progress';
 import { useToolCallIntent } from '../../react/parts/intent';
+import { useMessageContext } from '../../react/message';
 import useProgress from '../../react/parts/useProgress';
 import { hasToolParams } from '../../core/parts/params';
 import { useMessagePartsHost } from '../../react/host';
@@ -349,13 +353,24 @@ export default function ToolCall({
     setShowInfo(!showInfo);
   }, [mountBody, onExpand, setShowInfo, showInfo]);
 
+  /** Where the call is, when the tool reports it (`on_tool_progress`), scoped to this message. */
+  const { messageId } = useMessageContext();
+  const report = useAtomValue(
+    toolProgressByToolCallId(toolCallId && messageId ? toolProgressKey(messageId, toolCallId) : ''),
+  );
+
   /** A failed row spends its subtitle on the error's first line: what went
    *  wrong is the fact the reader needs from that slot, ahead of which server
-   *  the call went through. */
+   *  the call went through. A running call that reports its progress shows it there. */
   const subtitle = useMemo(() => {
     const errorLine = phase === 'failed' ? firstErrorLine(output) : '';
     if (errorLine.length > 0) {
       return errorLine;
+    }
+    const progressText =
+      phase === 'running' && report ? formatToolProgress(report, localize) : undefined;
+    if (progressText) {
+      return progressText;
     }
     if (isMCPToolCall && mcpServerName) {
       return localize('com_ui_via_server', { 0: mcpServerName });
@@ -364,7 +379,7 @@ export default function ToolCall({
       return localize('com_ui_via_server', { 0: domain });
     }
     return undefined;
-  }, [phase, output, isMCPToolCall, mcpServerName, domain, localize]);
+  }, [phase, output, report, isMCPToolCall, mcpServerName, domain, localize]);
 
   /** Model-authored live label, streamed as the first args key (injected by
    *  the `tool_intents` capability); persists as the settled label.
