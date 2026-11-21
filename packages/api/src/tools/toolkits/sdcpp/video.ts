@@ -271,6 +271,12 @@ export interface SdcppVideoSettings {
   scheduler?: string;
 }
 
+/** Still images a clip starts from and ends on (PNG, JPEG or still WebP bytes). */
+export interface SdcppClipImages {
+  start?: Buffer;
+  end?: Buffer;
+}
+
 /**
  * Seed sent when the calling model gave none. sd-server's native API takes an omitted seed from
  * the recipe (42), so every call would render the same noise; `-1` asks it for a random one, as
@@ -283,11 +289,14 @@ export const SDCPP_RANDOM_SEED = -1;
  * settings nested the way sd-server's native schema takes them (flat `steps` or `cfg_scale` are
  * ignored), and an animated WebP as the output, which browsers play in an `<img>`. Other settings
  * left out get sd-server's own defaults (for steps, CFG scale and the sampler not the recipe's, so
- * the caller fills those in); an omitted seed is random.
+ * the caller fills those in); an omitted seed is random. A start or end image goes in `init_image`
+ * or `end_image` as base64; sd-server crops it to the clip's aspect ratio and scales it to the
+ * clip's size.
  */
 export function buildSdcppVideoBody(
   settings: SdcppVideoSettings,
   clip: { frames: number; fps?: number },
+  images: SdcppClipImages = {},
 ): Record<string, unknown> {
   const { prompt, negative_prompt, width, height, steps, cfg_scale, seed } = settings;
   const sampleParams: Record<string, unknown> = {
@@ -306,5 +315,7 @@ export function buildSdcppVideoBody(
     seed: seed ?? SDCPP_RANDOM_SEED,
     output_format: 'webp',
     ...(Object.keys(sampleParams).length > 0 && { sample_params: sampleParams }),
+    ...(images.start && { init_image: images.start.toString('base64') }),
+    ...(images.end && { end_image: images.end.toString('base64') }),
   };
 }

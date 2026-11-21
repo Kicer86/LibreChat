@@ -429,6 +429,26 @@ describe('buildSdcppVideoBody', () => {
     });
   });
 
+  it('sends the start and end images as base64', () => {
+    const start = Buffer.from('start-png');
+    const end = Buffer.from('end-png');
+    expect(buildSdcppVideoBody({ prompt: 'a ball' }, { frames: 9 }, { start, end })).toEqual({
+      prompt: 'a ball',
+      video_frames: 9,
+      seed: -1,
+      output_format: 'webp',
+      init_image: start.toString('base64'),
+      end_image: end.toString('base64'),
+    });
+    expect(buildSdcppVideoBody({ prompt: 'a ball' }, { frames: 9 }, { end })).toEqual({
+      prompt: 'a ball',
+      video_frames: 9,
+      seed: -1,
+      output_format: 'webp',
+      end_image: end.toString('base64'),
+    });
+  });
+
   it('leaves out the settings not asked for, but asks for a random seed', () => {
     expect(buildSdcppVideoBody({ prompt: 'a cat', negative_prompt: '' }, { frames: 121 })).toEqual({
       prompt: 'a cat',
