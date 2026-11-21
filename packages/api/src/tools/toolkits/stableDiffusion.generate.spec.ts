@@ -126,6 +126,10 @@ function serve(
           : null;
       return after(0, config, { status: 200, data: { id: 'job_1', status: state, result } });
     }
+    if (requestUrl.includes('/sdapi/v1/progress')) {
+      const state = { job: 'txt2img', job_no: 0, sampling_step: 2, sampling_steps: 4 };
+      return { status: 200, data: { progress: 0.5, state } };
+    }
     if (requestUrl.endsWith('/sdcpp/v1/capabilities')) {
       return {
         status: 200,
@@ -202,6 +206,30 @@ describe('generateStableDiffusionImage', () => {
     jest.clearAllMocks();
     clearStableDiffusionBackendCache();
     clearSdcppCatalogCache();
+  });
+
+  it('reports loading the model and the steps of the generation', async () => {
+    serve({ id: 'qwen', file: 'qwen.gguf' }, undefined, { generateMs: 30 });
+    const onProgress = jest.fn(() => {
+      throw new Error('a broken card must not stop the generation');
+    });
+    const result = await generateStableDiffusionImage(
+      { prompt: 'a cat', model: 'flux' },
+      { url, req: req(), onProgress },
+    );
+    expect(result).toEqual({ data: generated('flux.gguf'), model: 'flux' });
+    expect(onProgress.mock.calls).toEqual([
+      [{ stage: 'loading_model', progress: 0 }],
+      [{ stage: 'sampling', progress: expect.any(Number), completed: 2, total: 4 }],
+    ]);
+  });
+
+  it('does not ask for progress when nobody shows it', async () => {
+    serve({ id: 'qwen', file: 'qwen.gguf' });
+    await generateStableDiffusionImage({ prompt: 'a cat' }, { url, req: req() });
+    expect(
+      mockGet.mock.calls.some(([requestUrl]) => String(requestUrl).includes('/progress')),
+    ).toBe(false);
   });
 
   it('generates with the loaded model without loading anything', async () => {

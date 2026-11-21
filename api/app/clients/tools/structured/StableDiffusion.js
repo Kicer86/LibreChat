@@ -111,7 +111,7 @@ class StableDiffusionAPI extends Tool {
   /**
    * @param {object} data
    * @param {unknown} [_runManager]
-   * @param {{ signal?: AbortSignal }} [runnableConfig]
+   * @param {{ signal?: AbortSignal, toolCall?: { reportProgress?: import('@librechat/api').ToolProgressReporter } }} [runnableConfig]
    */
   async _call(data, _runManager, runnableConfig) {
     const { prompt, negative_prompt } = data;
@@ -129,6 +129,7 @@ class StableDiffusionAPI extends Tool {
         lock: this.lock,
         signal: runnableConfig?.signal,
         allowVideo: this.isAgent === true,
+        onProgress: runnableConfig?.toolCall?.reportProgress,
       });
       if ('error' in generation) {
         return this.returnValue(generation.error);

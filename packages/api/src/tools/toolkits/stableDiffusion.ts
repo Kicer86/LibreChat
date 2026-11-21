@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { logger } from '@librechat/data-schemas';
+import type { TFile, ToolProgress } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import type { TFile } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
 import type {
   StableDiffusionSettingsRequest,
@@ -45,6 +45,8 @@ import {
   clipFrameLimit,
   runSdcppVideoJob,
   buildSdcppVideoBody,
+  watchWebuiProgress,
+  toToolProgress,
 } from './sdcpp';
 import {
   IMAGE_SIZE,
@@ -284,6 +286,11 @@ export interface StableDiffusionToolContext {
   signal?: AbortSignal;
   /** Whether the caller can show a video clip (agents can; the legacy plugin flow cannot). */
   allowVideo?: boolean;
+  /**
+   * Told where a stable-diffusion.cpp generation is (loading a model, then the stage and steps),
+   * for the call's card; a throwing reporter is ignored.
+   */
+  onProgress?: (progress: ToolProgress) => void;
 }
 
 export type PreparedStableDiffusionRequest =
@@ -618,6 +625,35 @@ export async function generateStableDiffusionImage(
         stableDiffusionGenerationConfig(request.config, appConfig, signal),
       )
     ).data;
+  const report = (progress: ToolProgress) => {
+    try {
+      context.onProgress?.(progress);
+    } catch (error) {
+      logger.debug('[StableDiffusion] Reporting progress failed', error);
+    }
+  };
+  /**
+   * An sd.cpp image generation, with its progress read from `/sdapi/v1/progress` while it runs
+   * when the caller wants it. It runs under the server lock, so that progress is this request's.
+   */
+  const generateSdcpp = async (payload: Record<string, unknown>, signal: AbortSignal) => {
+    if (!context.onProgress) {
+      return generate(payload, signal);
+    }
+    const watch = new AbortController();
+    const watching = watchWebuiProgress({
+      url: context.url,
+      probe: sdcppClient(context, AbortSignal.any([signal, watch.signal])).probe,
+      signal: watch.signal,
+      onProgress: (progress) => report(toToolProgress(progress, request.params.batch_size)),
+    });
+    try {
+      return await generate(payload, signal);
+    } finally {
+      watch.abort();
+      await watching;
+    }
+  };
   /**
    * The request with the size, steps and sampling settings for the model that renders it, within
    * the limits. Defaults the catalog does not give (a model outside it, or a recipe without them)
@@ -735,7 +771,12 @@ export async function generateStableDiffusionImage(
     }
     if (!restrictsSdcppModels(modelsConfig)) {
       const sized = await unlistedPayload(signal);
-      return 'error' in sized ? sized : { data: await generate(sized.payload, signal) };
+      if ('error' in sized) {
+        return sized;
+      }
+      /** Progress is read only from a server known to be sd.cpp. */
+      const send = request.backend === 'sdcpp' ? generateSdcpp : generate;
+      return { data: await send(sized.payload, signal) };
     }
     let loaded: SdcppModelStatus;
     try {
@@ -754,7 +795,7 @@ export async function generateStableDiffusionImage(
     if ('error' in sized) {
       return sized;
     }
-    const data = await generate(sized.payload, signal);
+    const data = await generateSdcpp(sized.payload, signal);
     const check = verifySdcppModel(loaded, data.info);
     if (check.result === 'mismatch') {
       logger.warn(
@@ -803,6 +844,7 @@ export async function generateStableDiffusionImage(
       cleanup: (cleanupSignal) => sdcppClient(context, cleanupSignal),
       signal,
       budgetMs,
+      onProgress: (progress) => report(toToolProgress(progress)),
     });
     if (job.status === 'rejected') {
       logger.warn(`[StableDiffusion] ${model.id} refused a video request (HTTP ${job.httpStatus})`);
@@ -863,11 +905,14 @@ export async function generateStableDiffusionImage(
       if ('error' in sized) {
         return sized;
       }
-      const data = await generate(sized.payload, signal);
+      const data = await generateSdcpp(sized.payload, signal);
       return { data, ...(status.recipe && { model: status.recipe }) };
     }
 
     const model = choice.model.id;
+    if (status.recipe !== model || !hasReadySdcppModel(status)) {
+      report({ stage: 'loading_model', progress: 0 });
+    }
     try {
       status = await loadSdcppModel(context.url, model, status, locked.post);
     } catch (error) {
@@ -887,7 +932,7 @@ export async function generateStableDiffusionImage(
     if ('error' in sized) {
       return sized;
     }
-    const data = await generate(sized.payload, signal);
+    const data = await generateSdcpp(sized.payload, signal);
     const check = verifySdcppModel(status, data.info);
     if (check.result === 'mismatch') {
       logger.warn(`[StableDiffusion] The model changed while ${model} generated (${check.detail})`);
