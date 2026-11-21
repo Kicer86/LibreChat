@@ -193,7 +193,7 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
       type: 'array',
       items: { type: 'string' },
       description:
-        'To change an existing image (img2img) instead of creating one from text: the ID of an image attached to this request or generated earlier. With "video": true, the image the clip starts from (its first frame), for a video model that starts from an image; a generated_video_id continues that clip from its last frame. Only the first ID is used. Omit to generate from text.',
+        'To change an existing image (img2img) instead of creating one from text: the ID of an image attached to this request or generated earlier. With "video": true, the image the clip starts from (its first frame), for a video model that starts from an image; a generated_video_id continues that clip from its last frame (an uploaded animation is stored as its first frame only). Only the first ID is used. Omit to generate from text.',
     },
     end_image_id: {
       type: 'string',

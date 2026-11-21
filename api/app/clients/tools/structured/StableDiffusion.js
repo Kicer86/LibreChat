@@ -67,7 +67,7 @@ class StableDiffusionAPI extends Tool {
 // - When the tool context lists image models, set "model" only if another model suits the request better than the loaded one; loading a model takes extra time.
 // - "width", "height", "steps", "cfg_scale", "seed", "count", "sampler" and "scheduler" are optional; omit them unless the user asks for a size, a format, a seed or other settings, since each model has suitable defaults. To make a variation of an earlier image, reuse its seed and change the prompt or settings.
 // - When the tool context lists video models and the user asks for a video or an animation, set "video": true (and "model" to choose a video model). Describe the motion as well as the scene. "frames" or "duration" and "fps" are optional; a clip takes minutes, so make one per request.
-// - To animate an image, or to continue a clip, pass its ID in "image_ids" with "video": true; to end the clip on an image, pass that ID in "end_image_id". Use a video model the tool context lists as starting from or ending on an image.
+// - To animate an image, or to continue a clip made earlier, pass its ID (for a clip, its generated_video_id) in "image_ids" with "video": true; to end the clip on an image, pass that ID in "end_image_id". Use a video model the tool context lists as starting from or ending on an image.
 // - Generate images only once per human query unless explicitly requested by the user`;
     this.description =
       "You can generate images using text with 'stable-diffusion', change an existing image (img2img) by passing its ID in image_ids, or make a short video clip when video models are listed. This tool is exclusively for visual content.";

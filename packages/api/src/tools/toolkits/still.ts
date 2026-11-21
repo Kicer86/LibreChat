@@ -13,9 +13,10 @@ export interface StillImageOptions {
 
 /**
  * The input image as one still frame, with its size read from the image. Image servers take
- * stills only (sd-server refuses an animated WebP), so a clip, such as a `generated_video_id` or
- * an attached animated WebP or GIF, gives its first or last frame as a PNG; a still image is
- * passed on as it is.
+ * stills only (sd-server refuses an animated WebP), so a clip, such as a `generated_video_id`,
+ * gives its first or last frame as a PNG; a still image is passed on as it is. An uploaded
+ * animation usually arrives as a still already: uploads are converted to `imageOutputType`, which
+ * keeps only the first frame unless the file is already in that format.
  *
  * Only the header is read to tell a clip from a still, so a long clip is not held to a pixel
  * limit meant for one image; the chosen frame alone is decoded, within the limit. Bytes that are
