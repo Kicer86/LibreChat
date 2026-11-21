@@ -35,6 +35,7 @@ import type { ActiveSubagentPanel } from '@librechat/chat/react';
 import type { PtcTrace, PtcTraceEntry } from '~/common';
 import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
+import { toolProgressByToolCallId } from '~/hooks/SSE/progress';
 import { IsolatedAtomStore } from 'test/harness';
 
 /** `Constants` is a heterogeneous enum (`string | number`); annotate as
@@ -2514,6 +2515,75 @@ describe('useStepHandler', () => {
           );
         });
         expect(result.current.starting).toBe(false);
+      },
+    );
+  });
+
+  describe('tool progress', () => {
+    const wrapper = ({ children }: React.PropsWithChildren) =>
+      React.createElement(RecoilRoot, null, React.createElement(IsolatedAtomStore, null, children));
+
+    it.each(['completed', 'cleanup'] as const)(
+      'keeps the latest report and clears it on %s',
+      (terminal) => {
+        mockGetMessages.mockReturnValue([createResponseMessage()]);
+        const { result } = renderHook(
+          () => ({
+            ...useStepHandler(createHookParams()),
+            progress: useAtomValue(toolProgressByToolCallId('tool-call-1')),
+          }),
+          { wrapper },
+        );
+        const submission = createSubmission();
+        expect(result.current.progress).toBeNull();
+        act(() => {
+          result.current.stepHandler(
+            { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+            submission,
+          );
+          for (const completed of [1, 2]) {
+            result.current.stepHandler(
+              {
+                event: StepEvents.ON_TOOL_PROGRESS,
+                data: {
+                  tool_call_id: 'tool-call-1',
+                  runId: 'run-1',
+                  stage: 'sampling',
+                  completed,
+                  total: 4,
+                },
+              },
+              submission,
+            );
+          }
+        });
+        expect(result.current.progress).toEqual({ stage: 'sampling', completed: 2, total: 4 });
+        act(() => {
+          if (terminal === 'cleanup') {
+            result.current.clearStepMaps();
+            return;
+          }
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_COMPLETED,
+              data: {
+                result: {
+                  id: 'step-tool-1',
+                  index: 0,
+                  tool_call: {
+                    id: 'tool-call-1',
+                    name: 'test_tool',
+                    args: '{}',
+                    output: 'done',
+                    type: ToolCallTypes.TOOL_CALL,
+                  },
+                } as Agents.ToolEndEvent,
+              },
+            },
+            submission,
+          );
+        });
+        expect(result.current.progress).toBeNull();
       },
     );
   });

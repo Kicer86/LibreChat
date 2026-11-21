@@ -5,6 +5,7 @@ import type {
   EventSubmission,
   SubagentUpdateEvent,
   PtcToolCallEvent,
+  ToolProgressEvent,
 } from 'librechat-data-provider';
 import type { StepEvent, StepEffect, StepContext, StreamState, AnnounceOptions } from '../../core';
 import {
@@ -31,6 +32,7 @@ import {
 import { ptcTraceByToolCallId, EMPTY_PTC_TRACE, PTC_TRACE_MAX_ENTRIES, ptcTraceKey } from './ptc';
 import { phaseReceipts, visitPhaseStamps } from './receipt';
 import { sandboxStartingByToolCallId } from './sandbox';
+import { toolProgressByToolCallId } from './progress';
 
 type TUseStepHandler = {
   announcePolite: (options: AnnounceOptions) => void;
@@ -171,6 +173,38 @@ export function useStepHandler({
     }
     knownSandboxAtomKeys.current.clear();
   }, [sandboxStore]);
+
+  /** Tool-call ids whose progress atom is set, so completion can clear them. */
+  const knownProgressAtomKeys = useRef(new Set<string>());
+  const progressStore = useStore();
+  const setToolProgress = useCallback(
+    (event: ToolProgressEvent): void => {
+      const { tool_call_id: toolCallId, runId: _runId, ...progress } = event;
+      if (!toolCallId) {
+        return;
+      }
+      knownProgressAtomKeys.current.add(toolCallId);
+      progressStore.set(toolProgressByToolCallId(toolCallId), progress);
+    },
+    [progressStore],
+  );
+
+  const clearToolProgress = useCallback(
+    (toolCallId?: string | null): void => {
+      if (!toolCallId || !knownProgressAtomKeys.current.delete(toolCallId)) {
+        return;
+      }
+      progressStore.set(toolProgressByToolCallId(toolCallId), null);
+    },
+    [progressStore],
+  );
+
+  const resetProgressAtoms = useCallback((): void => {
+    for (const toolCallId of knownProgressAtomKeys.current) {
+      progressStore.set(toolProgressByToolCallId(toolCallId), null);
+    }
+    knownProgressAtomKeys.current.clear();
+  }, [progressStore]);
 
   /** PTC tool call ids with a live trace, so the atoms can be released. */
   const knownPtcAtomKeys = useRef(new Set<string>());
@@ -319,6 +353,10 @@ export function useStepHandler({
             break;
           case 'sandbox-settled':
             clearSandboxStarting(effect.toolCallId);
+            clearToolProgress(effect.toolCallId);
+            break;
+          case 'tool-progress':
+            setToolProgress(effect.event);
             break;
           case 'skill-authored':
             onSkillAuthoringComplete?.();
@@ -339,6 +377,8 @@ export function useStepHandler({
       announcePolite,
       setSandboxStarting,
       clearSandboxStarting,
+      setToolProgress,
+      clearToolProgress,
       onSkillAuthoringComplete,
       applyPtcToolCall,
       applySubagentProgress,
@@ -422,6 +462,7 @@ export function useStepHandler({
      *  interrupted cold boot can't leak a stale "starting" label onto a
      *  later tool call that reuses the same id (e.g. `call_0`). */
     resetSandboxAtoms();
+    resetProgressAtoms();
     /** Intentionally NOT calling `resetSubagentAtoms()` here: users need
      *  to be able to reopen the SubagentCall dialog after completion to
      *  audit what the child did. `resetSubagentAtoms` is returned below
@@ -430,7 +471,13 @@ export function useStepHandler({
      *  persisted `subagent_content` takes over for historical messages
      *  once the conversation is saved, and we prevent unbounded
      *  atomFamily growth across multi-conversation sessions. */
-  }, [cancelPendingDeltaFlush, clearPhaseReceipts, closeParentSubagentStreams, resetSandboxAtoms]);
+  }, [
+    cancelPendingDeltaFlush,
+    clearPhaseReceipts,
+    closeParentSubagentStreams,
+    resetSandboxAtoms,
+    resetProgressAtoms,
+  ]);
 
   /**
    * Sync a message into the step handler's streaming copy.

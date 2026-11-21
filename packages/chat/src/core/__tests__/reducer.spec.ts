@@ -146,6 +146,10 @@ describe('reduceStep', () => {
     expect(reduceStep(state, { event: StepEvents.ON_PTC_TOOL_CALL, data: ptc }, ctx)).toEqual([
       { type: 'ptc', event: ptc, parentMessageId: 'resp-1' },
     ]);
+    const progress = { tool_call_id: 'call-1', stage: 'sampling', completed: 2, total: 4 };
+    expect(reduceStep(state, { event: StepEvents.ON_TOOL_PROGRESS, data: progress }, ctx)).toEqual([
+      { type: 'tool-progress', event: progress },
+    ]);
     expect(writes).toHaveLength(0);
   });
 

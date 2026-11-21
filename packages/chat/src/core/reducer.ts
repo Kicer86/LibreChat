@@ -266,6 +266,11 @@ export function reduceStep(state: StreamState, event: StepEvent, ctx: StepContex
     return effects;
   }
 
+  if (event.event === StepEvents.ON_TOOL_PROGRESS) {
+    effects.push({ type: 'tool-progress', event: event.data });
+    return effects;
+  }
+
   if (event.event === StepEvents.ON_PTC_TOOL_CALL) {
     /** `runId` is the response message id (the run configurable's `run_id`), the same
      *  correlation the subagent path uses. */

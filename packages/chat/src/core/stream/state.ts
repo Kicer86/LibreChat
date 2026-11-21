@@ -5,6 +5,7 @@ import type {
   TMessage,
   EventSubmission,
   PtcToolCallEvent,
+  ToolProgressEvent,
   SubagentUpdateEvent,
   SandboxStartingEvent,
 } from 'librechat-data-provider';
@@ -24,7 +25,8 @@ export type StepEvent =
   | { event: StepEvents.ON_SUMMARIZE_COMPLETE; data: Agents.SummarizeCompleteEvent }
   | { event: StepEvents.ON_SUBAGENT_UPDATE; data: SubagentUpdateEvent }
   | { event: StepEvents.ON_SANDBOX_STARTING; data: SandboxStartingEvent }
-  | { event: StepEvents.ON_PTC_TOOL_CALL; data: PtcToolCallEvent };
+  | { event: StepEvents.ON_PTC_TOOL_CALL; data: PtcToolCallEvent }
+  | { event: StepEvents.ON_TOOL_PROGRESS; data: ToolProgressEvent };
 
 /**
  * Side channels of one step event, in the order the event produced them.
@@ -40,6 +42,7 @@ export type StepEffect =
   | { type: 'sandbox-settled'; toolCallId?: string }
   | { type: 'skill-authored' }
   | { type: 'ptc'; event: PtcToolCallEvent; parentMessageId: string }
+  | { type: 'tool-progress'; event: ToolProgressEvent }
   | { type: 'subagent'; invocationKey: string; events: SubagentUpdateEvent[] }
   | { type: 'subagent-index'; conversationId: string };
 
