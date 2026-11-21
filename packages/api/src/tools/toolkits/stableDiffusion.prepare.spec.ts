@@ -5,16 +5,20 @@ import {
   prepareStableDiffusionRequest,
   clearStableDiffusionBackendCache,
   STABLE_DIFFUSION_IMAGE_NOT_LOADED,
+  STABLE_DIFFUSION_END_IMAGE_NOT_LOADED,
 } from './stableDiffusion';
 import { applySSRFSafeAgentIfDirect } from '~/auth/agent';
 import { createGeneratedImageRegistry } from './images';
+import { toStillImage } from './still';
 
 jest.mock('axios', () => ({ get: jest.fn() }));
+jest.mock('./still', () => ({ toStillImage: jest.fn(async (image: unknown) => image) }));
 jest.mock('~/auth/agent', () => ({
   applySSRFSafeAgentIfDirect: jest.fn((config: object) => ({ ...config, guarded: true })),
 }));
 
 const mockGet = axios.get as jest.Mock;
+const mockToStillImage = toStillImage as jest.Mock;
 const url = 'http://sd.local:7860';
 const req = {
   user: { id: 'user-1' },
@@ -115,4 +119,36 @@ describe('prepareStableDiffusionRequest', () => {
     expect(request).toEqual({ error: STABLE_DIFFUSION_IMAGE_NOT_LOADED });
     expect(mockGet).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['start from', { image_ids: ['clip-1'] }, 'last', STABLE_DIFFUSION_IMAGE_NOT_LOADED],
+    ['end on', { end_image_id: 'clip-1' }, 'first', STABLE_DIFFUSION_END_IMAGE_NOT_LOADED],
+  ])(
+    'refuses a clip to %s whose frame cannot be taken, without probing',
+    async (_role, ids, frame, error) => {
+      const generatedImages = createGeneratedImageRegistry();
+      const clip = {
+        file: { file_id: 'clip-1' },
+        buffer: Buffer.from('clip'),
+        mimeType: 'image/webp',
+      };
+      generatedImages.remember(req, clip);
+      mockToStillImage.mockResolvedValueOnce(undefined);
+
+      const request = await prepareStableDiffusionRequest(
+        { prompt: 'p', video: true, ...ids },
+        {
+          url,
+          req,
+          generatedImages,
+          findImageFiles: jest.fn(async () => [] as TFile[]),
+          getStrategyFunctions: jest.fn(() => ({})),
+        },
+      );
+
+      expect(mockToStillImage).toHaveBeenCalledWith(clip, frame);
+      expect(request).toEqual({ error });
+      expect(mockGet).not.toHaveBeenCalled();
+    },
+  );
 });

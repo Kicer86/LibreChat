@@ -358,18 +358,17 @@ async function loadInputImages(
         })
       : [];
   const byId = new Map(loaded.map((image) => [image.file.file_id, image]));
-  const start = startId ? byId.get(startId) : undefined;
+  const found = byId.get(startId ?? '');
+  const start = found && (await toStillImage(found, 'last'));
   if (startId && !start) {
     return { error: STABLE_DIFFUSION_IMAGE_NOT_LOADED };
   }
-  const end = endId ? byId.get(endId) : undefined;
+  const foundEnd = byId.get(endId ?? '');
+  const end = foundEnd && (await toStillImage(foundEnd, 'first'));
   if (endId && !end) {
     return { error: STABLE_DIFFUSION_END_IMAGE_NOT_LOADED };
   }
-  return {
-    ...(start && { image: await toStillImage(start, 'last') }),
-    ...(end && { endImage: await toStillImage(end, 'first') }),
-  };
+  return { ...(start && { image: start }), ...(end && { endImage: end }) };
 }
 
 /**
