@@ -64,9 +64,8 @@ describe('toStillImage', () => {
     });
   });
 
-  it('gives nothing for bytes that are not an image', async () => {
-    expect(await toStillImage(input(Buffer.from('not an image'), 'image/png'), 'first')).toBe(
-      undefined,
-    );
+  it('passes bytes that are not an image on unchanged', async () => {
+    const image = input(Buffer.from('not an image'), 'image/png');
+    expect(await toStillImage(image, 'first')).toBe(image);
   });
 });

@@ -193,14 +193,19 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
       type: 'array',
       items: { type: 'string' },
       description:
-        'To change an existing image (img2img) instead of creating one from text: the ID of an image attached to this request or generated earlier. Only the first ID is used. Omit to generate from text.',
+        'To change an existing image (img2img) instead of creating one from text: the ID of an image attached to this request or generated earlier. With "video": true, the image the clip starts from (its first frame), for a video model that starts from an image; a generated_video_id continues that clip from its last frame. Only the first ID is used. Omit to generate from text.',
+    },
+    end_image_id: {
+      type: 'string',
+      description:
+        "Only for video: the ID of an image the clip ends on (its last frame), for a video model that ends on an image; a generated_video_id ends on that clip's first frame. With image_ids as well, the clip moves from that image to this one. The clip takes the shape of the image it starts from, or of this one without a start image; an image of another shape is cropped.",
     },
     denoising_strength: {
       type: 'number',
       minimum: 0,
       maximum: 1,
       description:
-        'Only with image_ids: how much the image may change, from 0 (keep it) to 1 (ignore it). Up to about 0.75 the colors and shapes stay and only details change; changing a color or replacing an object needs about 0.85; about 0.95 keeps only the rough composition. Omit for the server default.',
+        'Only for img2img (image_ids without "video"): how much the image may change, from 0 (keep it) to 1 (ignore it). Up to about 0.75 the colors and shapes stay and only details change; changing a color or replacing an object needs about 0.85; about 0.95 keeps only the rough composition. Omit for the server default.',
     },
     model: {
       type: 'string',
@@ -210,7 +215,7 @@ export const stableDiffusionSchema: ExtendedJsonSchema = {
     video: {
       type: 'boolean',
       description:
-        'Set to true to make a short video clip instead of an image, when the tool context lists video models. A clip takes minutes; one call makes one clip.',
+        'Set to true to make a short video clip instead of an image, when the tool context lists video models. A clip can start from an image (image_ids) or end on one (end_image_id) when its model allows. A clip takes minutes; one call makes one clip.',
     },
     frames: {
       type: 'integer',

@@ -58,6 +58,7 @@ import { applySSRFSafeAgentIfDirect } from '~/auth/agent';
 import { buildImageToolContext } from './imageContext';
 import { createDistributedLock } from '~/cache/lock';
 import { loadImageInputs } from './images';
+import { toStillImage } from './still';
 
 /**
  * The server behind `SD_WEBUI_URL`. stable-diffusion.cpp's `sd-server` renders an omitted txt2img
@@ -238,12 +239,18 @@ export function buildStableDiffusionRequest({
 /** Shown to the model when `image_ids` names no image it may use. */
 export const STABLE_DIFFUSION_IMAGE_NOT_LOADED =
   'The image to change could not be loaded. Use the ID of an image attached to this request or generated earlier.';
+/** Shown to the model when `end_image_id` names no image it may use. */
+export const STABLE_DIFFUSION_END_IMAGE_NOT_LOADED =
+  'The image to end the clip on could not be loaded. Use the ID of an image attached to this request or generated earlier.';
 
 /** What the calling model passes besides the generation settings. */
 export interface StableDiffusionImageInput {
   prompt: string;
   negative_prompt?: string;
+  /** The image to change (img2img), or the image a clip starts from. */
   image_ids?: string[];
+  /** The image a clip ends on. */
+  end_image_id?: string;
   denoising_strength?: number;
   /** stable-diffusion.cpp model (recipe ID) to generate with; omitted, the loaded one is kept. */
   model?: string;
@@ -291,8 +298,10 @@ export type PreparedStableDiffusionRequest =
        */
       config: AxiosRequestConfig;
       backend: StableDiffusionBackend;
-      /** The input image, for img2img. */
+      /** The input image, for img2img, or the still a clip starts from. */
       image?: ImageInput;
+      /** The still a clip ends on. */
+      endImage?: ImageInput;
       /**
        * What the size and steps are resolved from. On stable-diffusion.cpp `payload` has neither:
        * they depend on the model that renders it.
@@ -318,29 +327,54 @@ function stableDiffusionRequestConfig(
   return context.isUserProvidedEndpoint ? applySSRFSafeAgentIfDirect(config, requestUrl) : config;
 }
 
-async function loadInputImage(
+/**
+ * The input images, as stills: the one to change or start a clip from (the first of `image_ids`)
+ * and the one to end a clip on (`end_image_id`). A clip given as either stands in by the frame
+ * next to the new one: its last frame to start from, so the new clip continues it, and its first
+ * frame to end on.
+ */
+async function loadInputImages(
   context: StableDiffusionToolContext,
-  imageIds: string[],
-): Promise<ImageInput | undefined> {
-  const { findImageFiles, getStrategyFunctions } = context;
-  if (!findImageFiles || !getStrategyFunctions) {
-    return undefined;
+  input: Pick<StableDiffusionImageInput, 'image_ids' | 'end_image_id'>,
+): Promise<{ image?: ImageInput; endImage?: ImageInput } | { error: string }> {
+  const startId = input.image_ids?.[0];
+  const endId = input.end_image_id || undefined;
+  if (!startId && !endId) {
+    return {};
   }
-  const [image] = await loadImageInputs({
-    imageIds: imageIds.slice(0, 1),
-    requestFiles: context.imageFiles ?? [],
-    req: context.req,
-    fileStrategy: context.fileStrategy,
-    findImageFiles,
-    getStrategyFunctions,
-    generatedImages: context.generatedImages,
-    logPrefix: '[StableDiffusion]',
-  });
-  return image;
+  const { findImageFiles, getStrategyFunctions } = context;
+  const imageIds = [startId, endId].filter((id): id is string => id != null);
+  const loaded =
+    findImageFiles && getStrategyFunctions
+      ? await loadImageInputs({
+          imageIds,
+          requestFiles: context.imageFiles ?? [],
+          req: context.req,
+          fileStrategy: context.fileStrategy,
+          findImageFiles,
+          getStrategyFunctions,
+          generatedImages: context.generatedImages,
+          logPrefix: '[StableDiffusion]',
+        })
+      : [];
+  const byId = new Map(loaded.map((image) => [image.file.file_id, image]));
+  const start = startId ? byId.get(startId) : undefined;
+  if (startId && !start) {
+    return { error: STABLE_DIFFUSION_IMAGE_NOT_LOADED };
+  }
+  const end = endId ? byId.get(endId) : undefined;
+  if (endId && !end) {
+    return { error: STABLE_DIFFUSION_END_IMAGE_NOT_LOADED };
+  }
+  return {
+    ...(start && { image: await toStillImage(start, 'last') }),
+    ...(end && { endImage: await toStillImage(end, 'first') }),
+  };
 }
 
 /**
- * Turns the tool's input into the generation request: loads the image to change (img2img),
+ * Turns the tool's input into the generation request: loads the image to change (img2img) or the
+ * stills a clip starts from and ends on,
  * detects the backend, checks the generation settings against the limits, and builds the payload
  * and the HTTP config. A WebUI payload is complete; a stable-diffusion.cpp one gets its size and
  * steps once the model is known. The probe gets the `toolsMs` budget; both it and the generation
@@ -350,13 +384,11 @@ export async function prepareStableDiffusionRequest(
   input: StableDiffusionToolInput,
   context: StableDiffusionToolContext,
 ): Promise<PreparedStableDiffusionRequest> {
-  let image: ImageInput | undefined;
-  if (input.image_ids?.length) {
-    image = await loadInputImage(context, input.image_ids);
-    if (!image) {
-      return { error: STABLE_DIFFUSION_IMAGE_NOT_LOADED };
-    }
+  const images = await loadInputImages(context, input);
+  if ('error' in images) {
+    return images;
   }
+  const { image, endImage } = images;
 
   const appConfig = context.req?.config;
   const server = await detectStableDiffusionServer(context.url, (probeUrl) =>
@@ -378,7 +410,8 @@ export async function prepareStableDiffusionRequest(
   }
   const settings: StableDiffusionSettingsRequest = {
     backend,
-    image: image?.file,
+    /** A clip keeps the shape of the image it starts from, or else of the one it ends on. */
+    image: (image ?? endImage)?.file,
     width: check.value.width,
     height: check.value.height,
     steps: check.value.steps,
@@ -413,6 +446,7 @@ export async function prepareStableDiffusionRequest(
     clip: check.clip,
     maxFrames: check.maxFrames,
     ...(image && { image }),
+    ...(endImage && { endImage }),
   };
 }
 
@@ -463,9 +497,12 @@ export const STABLE_DIFFUSION_SERVER_BUSY =
 /** Shown to the model when it asks a server without video models, or the plugin flow, for a clip. */
 export const STABLE_DIFFUSION_VIDEO_UNSUPPORTED =
   'This image server cannot make video clips here. Omit "video", "frames", "duration" and "fps".';
-/** Shown to the model when it asks for a clip from an image, which this tool does not do yet. */
-export const STABLE_DIFFUSION_VIDEO_FROM_IMAGE =
-  'A video clip cannot start from an image yet. Omit "image_ids" to make a clip from the prompt.';
+/** Shown to the model when it passes an image to end on without asking for a clip. */
+export const STABLE_DIFFUSION_END_IMAGE_WITHOUT_VIDEO =
+  '"end_image_id" is for video clips. Set "video": true, or omit it for an image.';
+/** Shown to the model when it passes img2img's strength for a clip. */
+export const STABLE_DIFFUSION_VIDEO_STRENGTH =
+  '"denoising_strength" is for changing an image. Omit it for a video clip.';
 /** Shown to the model when it asks for several clips in one call. */
 export const STABLE_DIFFUSION_VIDEO_COUNT = 'One call makes one video clip. Omit "count".';
 /** Shown to the model when it passes clip settings for an image. */
@@ -568,9 +605,6 @@ export async function generateStableDiffusionImage(
   context: StableDiffusionToolContext,
 ): Promise<StableDiffusionGeneration> {
   const clipAsked = input.frames != null || input.duration != null || input.fps != null;
-  if (input.video === true && input.image_ids?.length) {
-    return { error: STABLE_DIFFUSION_VIDEO_FROM_IMAGE };
-  }
   const request = await prepareStableDiffusionRequest(input, context);
   if ('error' in request) {
     return request;
@@ -634,6 +668,9 @@ export async function generateStableDiffusionImage(
     if (input.video === true || clipAsked) {
       return { error: STABLE_DIFFUSION_VIDEO_UNSUPPORTED };
     }
+    if (request.endImage) {
+      return { error: STABLE_DIFFUSION_END_IMAGE_WITHOUT_VIDEO };
+    }
     if (input.model) {
       return { error: STABLE_DIFFUSION_MODEL_UNSUPPORTED };
     }
@@ -658,14 +695,16 @@ export async function generateStableDiffusionImage(
     if (lookup.status === 'unavailable') {
       return { error: STABLE_DIFFUSION_MODELS_UNAVAILABLE };
     }
-    if (request.image) {
-      return { error: STABLE_DIFFUSION_VIDEO_FROM_IMAGE };
+    if (input.denoising_strength != null) {
+      return { error: STABLE_DIFFUSION_VIDEO_STRENGTH };
     }
     if (input.count != null && input.count > 1) {
       return { error: STABLE_DIFFUSION_VIDEO_COUNT };
     }
   } else if (clipAsked) {
     return { error: STABLE_DIFFUSION_CLIP_WITHOUT_VIDEO };
+  } else if (request.endImage) {
+    return { error: STABLE_DIFFUSION_END_IMAGE_WITHOUT_VIDEO };
   }
   const budgetKey = video ? 'videoGenerationMs' : 'imageGenerationMs';
   const lockParams = {
@@ -729,9 +768,10 @@ export async function generateStableDiffusionImage(
 
   type Attempt = StableDiffusionGeneration | { switchedAway: string };
   /**
-   * Makes a clip with the loaded video `model`: size and steps fitted to the limits, frames to its
-   * rule and to what can be saved at that size, then a job that runs within `videoGenerationMs` and is cancelled when it outlasts it
-   * or the response is stopped.
+   * Makes a clip with the loaded video `model`: size and steps fitted to the limits (the size to
+   * the shape of a start or end image, which sd-server would otherwise crop), frames to its rule
+   * and to what can be saved at that size, then a job that runs within `videoGenerationMs` and is
+   * cancelled when it outlasts it or the response is stopped.
    */
   const generateVideo = async (
     model: SdcppModel,
@@ -758,6 +798,7 @@ export async function generateStableDiffusionImage(
           ...sized.settings,
         },
         clip.value,
+        { start: request.image?.buffer, end: request.endImage?.buffer },
       ),
       connect: (jobSignal) => sdcppClient(context, jobSignal),
       cleanup: (cleanupSignal) => sdcppClient(context, cleanupSignal),
@@ -809,6 +850,7 @@ export async function generateStableDiffusionImage(
       config: modelsConfig,
       requested,
       withImage: request.image != null,
+      withEndImage: request.endImage != null,
       video,
       readyOutsideCatalog: !status.recipe && hasReadySdcppModel(status),
     });

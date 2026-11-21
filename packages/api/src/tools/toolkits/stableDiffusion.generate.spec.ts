@@ -1,11 +1,14 @@
 import axios from 'axios';
+import sharp from 'sharp';
 import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import {
   STABLE_DIFFUSION_VIDEO_COUNT,
   STABLE_DIFFUSION_VIDEO_FAILED,
   stableDiffusionVideoTimeout,
-  STABLE_DIFFUSION_VIDEO_FROM_IMAGE,
+  STABLE_DIFFUSION_VIDEO_STRENGTH,
+  STABLE_DIFFUSION_END_IMAGE_NOT_LOADED,
+  STABLE_DIFFUSION_END_IMAGE_WITHOUT_VIDEO,
   STABLE_DIFFUSION_VIDEO_UNSUPPORTED,
   STABLE_DIFFUSION_CLIP_WITHOUT_VIDEO,
   STABLE_DIFFUSION_LOCK_LOST,
@@ -40,6 +43,11 @@ const recipes = [
   recipe('ltx', 'ltx.gguf', {
     defaults: { width: 768, height: 512, steps: 8, video_frames: 121, fps: 24 },
     video_constraints: { frame_offset: 1, frame_step: 8, frame_rounding: 'floor', min_frames: 1 },
+    effective_features: { init_image: true, end_image: true },
+  }),
+  recipe('wan', 'wan.gguf', {
+    defaults: { width: 832, height: 480, steps: 20, video_frames: 33, fps: 16 },
+    effective_features: {},
   }),
   recipe('sdxl', 'sdxl.gguf', {
     defaults: {
@@ -786,11 +794,6 @@ describe('generateStableDiffusionImage', () => {
 
     it.each([
       [{ prompt: 'p', video: true }, {}, STABLE_DIFFUSION_VIDEO_UNSUPPORTED],
-      [
-        { prompt: 'p', video: true, image_ids: ['img-1'] },
-        { allowVideo: true },
-        STABLE_DIFFUSION_VIDEO_FROM_IMAGE,
-      ],
       [{ prompt: 'p', video: true, count: 2 }, { allowVideo: true }, STABLE_DIFFUSION_VIDEO_COUNT],
       [{ prompt: 'p', frames: 9 }, { allowVideo: true }, STABLE_DIFFUSION_CLIP_WITHOUT_VIDEO],
       [
@@ -808,6 +811,142 @@ describe('generateStableDiffusionImage', () => {
       const result = await generateStableDiffusionImage(input, { url, req: req(), ...context });
       expect(result).toEqual({ error });
       expect(sent('/sdcpp/v1/vid_gen')).toBeUndefined();
+    });
+
+    describe('from images', () => {
+      const RED = '#ff0000';
+      const BLUE = '#0000ff';
+      const still = (width: number, height: number, background = RED) =>
+        sharp({ create: { width, height, channels: 3, background } })
+          .png()
+          .toBuffer();
+      /** The dominant channel of a base64 image's first pixel: 0 red, 1 green, 2 blue. */
+      const dominantChannel = async (base64: string) => {
+        const pixel = [...(await sharp(Buffer.from(base64, 'base64')).raw().toBuffer())];
+        return pixel.indexOf(Math.max(...pixel.slice(0, 3)));
+      };
+
+      let photo: Buffer;
+      let context: Parameters<typeof generateStableDiffusionImage>[1];
+
+      beforeEach(async () => {
+        photo = await still(160, 90);
+        const frames = await Promise.all([still(64, 32, RED), still(64, 32, BLUE)]);
+        const clipFile = await sharp(frames, { join: { animated: true } })
+          .webp()
+          .toBuffer();
+        const request = req();
+        const generatedImages = createGeneratedImageRegistry();
+        generatedImages.remember(request, {
+          file: { file_id: 'photo' },
+          buffer: photo,
+          mimeType: 'image/png',
+        });
+        generatedImages.remember(request, {
+          file: { file_id: 'clip-1', width: 64, height: 32 },
+          buffer: clipFile,
+          mimeType: 'image/webp',
+        });
+        context = {
+          url,
+          req: request,
+          allowVideo: true,
+          generatedImages,
+          findImageFiles: jest.fn(async () => [] as TFile[]),
+          getStrategyFunctions: jest.fn(() => ({})),
+        };
+      });
+
+      it("starts a clip from an image, shaped like it at the model's size", async () => {
+        serve({ id: 'ltx', file: 'ltx.gguf' });
+        const result = await generateStableDiffusionImage(
+          { prompt: 'a ball rolls', video: true, image_ids: ['photo'], frames: 9 },
+          context,
+        );
+        expect(result).toMatchObject({ video: clip, model: 'ltx' });
+        expect(sent('/sdcpp/v1/vid_gen')).toEqual({
+          prompt: 'a ball rolls',
+          width: 768,
+          height: 448,
+          video_frames: 9,
+          fps: 24,
+          seed: -1,
+          output_format: 'webp',
+          sample_params: { sample_steps: 8 },
+          init_image: photo.toString('base64'),
+        });
+      });
+
+      it('continues a clip from its last frame and ends on an image', async () => {
+        serve({ id: 'ltx', file: 'ltx.gguf' });
+        await generateStableDiffusionImage(
+          { prompt: 'a ball rolls', video: true, image_ids: ['clip-1'], end_image_id: 'photo' },
+          context,
+        );
+        const body = sent('/sdcpp/v1/vid_gen');
+        expect(body).toMatchObject({
+          width: 768,
+          height: 384,
+          end_image: photo.toString('base64'),
+        });
+        const start = await sharp(Buffer.from(body.init_image, 'base64')).metadata();
+        expect(start).toMatchObject({ format: 'png', width: 64, height: 32 });
+        expect(await dominantChannel(body.init_image)).toBe(2);
+      });
+
+      it('ends a clip on the first frame of another, shaped like it', async () => {
+        serve({ id: 'ltx', file: 'ltx.gguf' });
+        await generateStableDiffusionImage(
+          { prompt: 'a ball rolls', video: true, end_image_id: 'clip-1' },
+          context,
+        );
+        const body = sent('/sdcpp/v1/vid_gen');
+        expect(body).toMatchObject({ width: 768, height: 384 });
+        expect(body.init_image).toBeUndefined();
+        expect(await dominantChannel(body.end_image)).toBe(0);
+      });
+
+      it('switches to a video model that starts from an image', async () => {
+        serve({ id: 'wan', file: 'wan.gguf' });
+        const result = await generateStableDiffusionImage(
+          { prompt: 'a ball rolls', video: true, image_ids: ['photo'] },
+          context,
+        );
+        expect(result).toMatchObject({ model: 'ltx' });
+        expect(loadCalls()).toEqual([
+          [`${url}/sdcpp/v1/models/load`, { recipe: 'ltx' }, expect.any(Object)],
+        ]);
+      });
+
+      it("changes a clip's last frame with img2img", async () => {
+        serve({ id: 'qwen', file: 'qwen.gguf' });
+        await generateStableDiffusionImage({ prompt: 'red', image_ids: ['clip-1'] }, context);
+        const img2img = sent('/sdapi/v1/img2img');
+        expect(img2img).toMatchObject({ width: 1024, height: 512 });
+        expect(await dominantChannel(img2img.init_images[0])).toBe(2);
+      });
+
+      it.each([
+        [
+          { prompt: 'p', model: 'wan', image_ids: ['photo'] },
+          expect.stringContaining('cannot start a clip from an image'),
+        ],
+        [{ prompt: 'p', end_image_id: 'photo' }, STABLE_DIFFUSION_END_IMAGE_WITHOUT_VIDEO],
+        [
+          { prompt: 'p', video: true, image_ids: ['photo'], denoising_strength: 0.5 },
+          STABLE_DIFFUSION_VIDEO_STRENGTH,
+        ],
+        [
+          { prompt: 'p', video: true, image_ids: ['photo'], end_image_id: 'nope' },
+          STABLE_DIFFUSION_END_IMAGE_NOT_LOADED,
+        ],
+      ])('refuses %j before sending a job', async (input, error) => {
+        serve({ id: 'ltx', file: 'ltx.gguf' });
+        expect(await generateStableDiffusionImage(input, context)).toEqual({ error });
+        expect(sent('/sdcpp/v1/vid_gen')).toBeUndefined();
+        expect(sent('/sdapi/v1/txt2img')).toBeUndefined();
+        expect(sent('/sdapi/v1/img2img')).toBeUndefined();
+      });
     });
 
     it('makes no more frames than can be saved at the size asked for', async () => {
