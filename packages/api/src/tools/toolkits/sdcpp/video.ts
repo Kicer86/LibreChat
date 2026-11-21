@@ -58,12 +58,31 @@ export interface RunSdcppVideoJobParams {
   signal: AbortSignal;
   /** How long the job may run, from the moment it is sent. */
   budgetMs: number;
+  /** Told where the job is each time that changes; it must not throw. */
+  onProgress?: (progress: SdcppJobProgress) => void;
   now?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
+/**
+ * Where a running job is, as sd-server reports it. `stage` is sd-server's name for the step it is
+ * on (`conditioning`, `sampling`, `vae_decode`, ...), or `queued` while other jobs run first.
+ * `pass` counts the images of a batch while they are sampled, from 1; `completed` of `total`
+ * counts what the stage works through (sampling steps).
+ */
+export interface SdcppJobProgress {
+  stage: string;
+  pass?: number;
+  completed?: number;
+  total?: number;
+  /** Jobs ahead of this one, while it is queued. */
+  queuePosition?: number;
+}
+
 /** How often a running job is asked for its state. */
-const POLL_MS = 2_000;
+const POLL_MS = 1_000;
+/** How often a cancelled job is asked whether it has ended. */
+const CANCEL_POLL_MS = 2_000;
 /**
  * How long a cancelled job is waited for. sd-server stops a job at the end of its current
  * sampling step, which takes tens of seconds for large video models, and cannot load another
@@ -78,6 +97,43 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 
 const positiveInteger = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+
+const count = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+
+/** The progress in a running job's state; none when sd-server reports nothing readable. */
+export function readSdcppJobProgress(job: Record<string, unknown>): SdcppJobProgress | undefined {
+  if (job.status === 'queued') {
+    const queuePosition = count(job.queue_position);
+    return { stage: 'queued', ...(queuePosition != null && { queuePosition }) };
+  }
+  const progress = isPlainObject(job.progress) ? job.progress : undefined;
+  const stage = typeof progress?.stage === 'string' ? progress.stage : '';
+  if (!progress || stage.length === 0) {
+    return undefined;
+  }
+  const pass = positiveInteger(progress.pass);
+  const completed = count(progress.completed);
+  const total = positiveInteger(progress.total);
+  return {
+    stage,
+    ...(pass != null && { pass }),
+    ...(completed != null && { completed }),
+    ...(total != null && { total }),
+  };
+}
+
+/** Whether two reports say the same, so an unchanged state is not reported again. */
+export const sameSdcppJobProgress = (
+  a: SdcppJobProgress | undefined,
+  b: SdcppJobProgress,
+): boolean =>
+  a != null &&
+  a.stage === b.stage &&
+  a.pass === b.pass &&
+  a.completed === b.completed &&
+  a.total === b.total &&
+  a.queuePosition === b.queuePosition;
 
 interface JobState {
   status: string;
@@ -169,7 +225,7 @@ async function cancelJob(
       } catch (error) {
         logger.debug('[StableDiffusion] Cancelling a video job failed; retrying', error);
       }
-      await sleep(Math.min(POLL_MS, Math.max(0, deadline - now())), waiting.signal).catch(
+      await sleep(Math.min(CANCEL_POLL_MS, Math.max(0, deadline - now())), waiting.signal).catch(
         () => undefined,
       );
     }
@@ -192,7 +248,8 @@ class SdcppVideoBudgetError extends Error {
 
 /**
  * Runs a stable-diffusion.cpp video job (`POST /sdcpp/v1/vid_gen`) and waits for its clip,
- * asking `GET /sdcpp/v1/jobs/{id}` for its state. The budget starts when the job is sent and also
+ * asking `GET /sdcpp/v1/jobs/{id}` for its state and passing each new stage or step to
+ * `onProgress`. The budget starts when the job is sent and also
  * ends a request still waiting for an answer. A job still running when the budget ends, when
  * `signal` fires, or when its state cannot be read is cancelled (`POST .../cancel`), and the
  * call waits for it to end, so the server is free for the next one. A fired `signal` then
@@ -206,6 +263,7 @@ export async function runSdcppVideoJob({
   cleanup,
   signal,
   budgetMs,
+  onProgress,
   now = Date.now,
   sleep = sleepUnlessAborted,
 }: RunSdcppVideoJobParams): Promise<SdcppVideoJobResult> {
@@ -216,6 +274,7 @@ export async function runSdcppVideoJob({
   const jobSignal = AbortSignal.any([signal, budget.signal]);
   const client = connect(jobSignal);
   let jobUrl: string | undefined;
+  let reported: SdcppJobProgress | undefined;
   const settle = async () => {
     if (jobUrl) {
       await cancelJob(cleanup, jobUrl, now, sleep);
@@ -239,6 +298,11 @@ export async function runSdcppVideoJob({
       }
       if (job.status === 'failed' || job.status === 'cancelled') {
         return { status: 'failed', code: failureCode(job.data, job.status) };
+      }
+      const progress = readSdcppJobProgress(job.data);
+      if (progress && onProgress && !sameSdcppJobProgress(reported, progress)) {
+        reported = progress;
+        onProgress(progress);
       }
       if (now() >= deadline || budget.signal.aborted) {
         await settle();

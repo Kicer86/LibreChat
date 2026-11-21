@@ -1,5 +1,10 @@
-import type { SdcppJobClient } from './video';
-import { buildSdcppVideoBody, runSdcppVideoJob, SdcppVideoJobError } from './video';
+import type { SdcppJobClient, SdcppJobProgress } from './video';
+import {
+  buildSdcppVideoBody,
+  runSdcppVideoJob,
+  SdcppVideoJobError,
+  readSdcppJobProgress,
+} from './video';
 
 const url = 'http://sd.local';
 const jobUrl = `${url}/sdcpp/v1/jobs/job_1`;
@@ -391,6 +396,59 @@ describe('runSdcppVideoJob cancelling with requests that do not answer', () => {
     const { result, took } = await run(cleanup, running.client);
     expect(result).toEqual({ status: 'timeout' });
     expect(took).toBeLessThan(5_000);
+  });
+});
+
+describe('video job progress', () => {
+  const sampling = (pass: number, completed: number) => ({
+    status: 'generating',
+    progress: { stage: 'sampling', pass, completed, total: 8, unit: 'steps', elapsed_ms: 10 },
+  });
+
+  it('reports each new stage, step or queue position once', async () => {
+    const server = fakeServer([
+      { status: 'queued', queue_position: 1 },
+      { status: 'queued', queue_position: 0 },
+      { status: 'generating', progress: { stage: 'conditioning', completed: null, total: null } },
+      sampling(1, 0),
+      sampling(1, 0),
+      sampling(1, 7),
+      { status: 'generating', progress: { stage: 'vae_decode', pass: 1 } },
+      { status: 'completed', result: clip },
+    ]);
+    const clock = fakeClock();
+    const reported: SdcppJobProgress[] = [];
+    const result = await runSdcppVideoJob({
+      url,
+      body,
+      connect: () => server.client,
+      cleanup: () => server.client,
+      signal: new AbortController().signal,
+      budgetMs: 60_000,
+      onProgress: (progress) => reported.push(progress),
+      ...clock,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(reported).toEqual([
+      { stage: 'queued', queuePosition: 1 },
+      { stage: 'queued', queuePosition: 0 },
+      { stage: 'conditioning' },
+      { stage: 'sampling', pass: 1, completed: 0, total: 8 },
+      { stage: 'sampling', pass: 1, completed: 7, total: 8 },
+      { stage: 'vae_decode', pass: 1 },
+    ]);
+  });
+
+  it('reads nothing from a job without a readable stage, and drops odd counts', () => {
+    expect(readSdcppJobProgress({ status: 'generating' })).toBeUndefined();
+    expect(readSdcppJobProgress({ status: 'generating', progress: { stage: '' } })).toBeUndefined();
+    expect(
+      readSdcppJobProgress({
+        status: 'generating',
+        progress: { stage: 'sampling', pass: 0, completed: 1.5, total: '8' },
+      }),
+    ).toEqual({ stage: 'sampling' });
   });
 });
 
