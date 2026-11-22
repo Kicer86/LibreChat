@@ -133,6 +133,8 @@ export function verifySdcppModel(status: SdcppModelStatus, info: unknown): Sdcpp
 /** How long a holder keeps the server lock without renewing it (it renews while working). */
 const LOCK_TTL_MS = 60_000;
 const LOCK_RENEW_MS = 20_000;
+/** A holder whose lease is not confirmed stops this long before it could expire. */
+const LOCK_MARGIN_MS = 10_000;
 const LOCK_RETRY_MS = 500;
 
 export interface WithSdcppServerLockParams {
@@ -163,12 +165,13 @@ export class SdcppLockError extends Error {
  * Redis-backed lock this holds across LibreChat instances. It does not stop clients outside
  * LibreChat from switching the model; `verifySdcppModel` detects that afterwards.
  *
- * The lease is renewed while the task runs. When it is lost (renewal refused, or failing until
- * the lease would expire) `task`'s signal is aborted, so it must pass the signal to every
- * request and start none after it fired; the call then throws `SdcppLockError` (`lost`) even if
- * the task finished, since its result was not protected. Aborting a request does not stop work
- * sd-server already started. Throws `SdcppLockError` (`busy`) when the lock is not free within
- * `waitMs`.
+ * The lease is renewed while the task runs, one renewal at a time. When it is lost (renewal
+ * refused, or not confirmed shortly before the lease could expire, also while a renewal hangs)
+ * `task`'s signal is aborted, so it must pass the signal to every request and start none after
+ * it fired; the call then throws `SdcppLockError` (`lost`) even if the task finished, since its
+ * result was not protected. A renewal answered after that does not bring the lease back.
+ * Aborting a request does not stop work sd-server already started. Throws `SdcppLockError`
+ * (`busy`) when the lock is not free within `waitMs`.
  */
 export async function withSdcppServerLock<T>(
   { lock, url, waitMs, now = Date.now, sleep = defaultSleep }: WithSdcppServerLockParams,
@@ -176,41 +179,65 @@ export async function withSdcppServerLock<T>(
 ): Promise<T> {
   const key = `stable-diffusion:sdcpp:${url}`;
   const deadline = now() + waitMs;
+  /** When the last acquire or renewal was sent: the lease runs at least that long from there. */
+  let sentAt = now();
   let token = await lock.acquire(key, LOCK_TTL_MS);
   while (!token) {
     if (now() >= deadline) {
       throw new SdcppLockError('busy', `server lock still held after ${waitMs} ms`);
     }
     await sleep(LOCK_RETRY_MS);
+    sentAt = now();
     token = await lock.acquire(key, LOCK_TTL_MS);
   }
 
   const held = token;
   const controller = new AbortController();
+  let done = false;
+  let renewal: ReturnType<typeof setTimeout> | undefined;
+  let expiry: ReturnType<typeof setTimeout> | undefined;
   const lose = (reason: string) => {
-    if (!controller.signal.aborted) {
+    if (!done && !controller.signal.aborted) {
       logger.warn(`[StableDiffusion] ${reason}; stopping the generation`);
       controller.abort(new SdcppLockError('lost', reason));
     }
   };
-  let renewedAt = now();
-  const renew = setInterval(() => {
-    lock.extend(key, held, LOCK_TTL_MS).then(
-      (extended) => {
-        if (extended) {
-          renewedAt = now();
-        } else {
-          lose('Lost the sd.cpp server lock');
-        }
-      },
-      () => {
-        if (now() - renewedAt + LOCK_RENEW_MS >= LOCK_TTL_MS) {
-          lose('Could not renew the sd.cpp server lock before it expires');
-        }
-      },
+  /** Stops the task before the lease confirmed at `since` could expire, unless renewed first. */
+  const guard = (since: number) => {
+    clearTimeout(expiry);
+    expiry = setTimeout(
+      () => lose('Could not renew the sd.cpp server lock before it expires'),
+      Math.max(0, since + LOCK_TTL_MS - LOCK_MARGIN_MS - now()),
     );
-  }, LOCK_RENEW_MS);
-  renew.unref?.();
+    expiry.unref?.();
+  };
+  /** Sends the next renewal when the last one settled, so they never overlap. */
+  const schedule = () => {
+    renewal = setTimeout(() => {
+      const sent = now();
+      lock.extend(key, held, LOCK_TTL_MS).then(
+        (extended) => {
+          if (done || controller.signal.aborted) {
+            return;
+          }
+          if (!extended) {
+            lose('Lost the sd.cpp server lock');
+            return;
+          }
+          guard(sent);
+          schedule();
+        },
+        () => {
+          if (!done && !controller.signal.aborted) {
+            schedule();
+          }
+        },
+      );
+    }, LOCK_RENEW_MS);
+    renewal.unref?.();
+  };
+  guard(sentAt);
+  schedule();
   try {
     const result = await task(controller.signal);
     controller.signal.throwIfAborted();
@@ -219,7 +246,9 @@ export async function withSdcppServerLock<T>(
     controller.signal.throwIfAborted();
     throw error;
   } finally {
-    clearInterval(renew);
+    done = true;
+    clearTimeout(renewal);
+    clearTimeout(expiry);
     await lock.release(key, held).catch(() => undefined);
   }
 }

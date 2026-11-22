@@ -226,11 +226,84 @@ describe('withSdcppServerLock', () => {
       const order: string[] = [];
       const run = withSdcppServerLock({ lock, url, waitMs: 0 }, waitForAbort(order, 'task'));
       const outcome = run.catch((error: unknown) => error);
-      await jest.advanceTimersByTimeAsync(20_000);
+      await jest.advanceTimersByTimeAsync(49_999);
       expect(order).toEqual(['task:start']);
-      await jest.advanceTimersByTimeAsync(20_000);
+      expect(lock.extend).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(1);
       expect(await outcome).toMatchObject({ code: 'lost' });
       expect(order).toEqual(['task:start', 'task:aborted']);
+    });
+
+    it('keeps the lease when a renewal succeeds after a failed one', async () => {
+      const lock = {
+        acquire: jest.fn(async () => 'token'),
+        extend: jest
+          .fn<Promise<boolean>, []>()
+          .mockRejectedValueOnce(new Error('redis unavailable'))
+          .mockResolvedValue(true),
+        release: jest.fn(async () => true),
+      };
+      const run = withSdcppServerLock({ lock, url, waitMs: 0 }, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200_000));
+        return 'image';
+      });
+      await jest.advanceTimersByTimeAsync(200_000);
+      await expect(run).resolves.toBe('image');
+      expect(lock.extend).toHaveBeenCalledTimes(9);
+    });
+
+    it('stops the task while a renewal hangs, without sending another one', async () => {
+      const lock = {
+        acquire: jest.fn(async () => 'token'),
+        extend: jest.fn(() => new Promise<boolean>(() => undefined)),
+        release: jest.fn(async () => true),
+      };
+      const order: string[] = [];
+      const run = withSdcppServerLock({ lock, url, waitMs: 0 }, waitForAbort(order, 'task'));
+      const outcome = run.catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(49_999);
+      expect(order).toEqual(['task:start']);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(await outcome).toMatchObject({ code: 'lost' });
+      expect(lock.extend).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not bring the lease back with a renewal answered after it was lost', async () => {
+      const lock = {
+        acquire: jest.fn(async () => 'token'),
+        extend: jest.fn(
+          () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 35_000)),
+        ),
+        release: jest.fn(async () => true),
+      };
+      const run = withSdcppServerLock({ lock, url, waitMs: 0 }, async () => {
+        await new Promise((resolve) => setTimeout(resolve, 70_000));
+        return 'image';
+      });
+      const outcome = run.catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(70_000);
+      expect(await outcome).toMatchObject({ code: 'lost' });
+      expect(lock.extend).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops the first holder while its renewal hangs before another one takes over', async () => {
+      const shared = createDistributedLock();
+      const hanging = { ...shared, extend: jest.fn(() => new Promise<boolean>(() => undefined)) };
+      const order: string[] = [];
+      const first = withSdcppServerLock(
+        { lock: hanging, url, waitMs: 0 },
+        waitForAbort(order, 'first'),
+      );
+      const firstOutcome = first.catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(0);
+      const second = withSdcppServerLock({ lock: shared, url, waitMs: 120_000 }, async () => {
+        order.push('second:start');
+        return 'second';
+      });
+      await jest.advanceTimersByTimeAsync(70_000);
+      expect(await firstOutcome).toMatchObject({ code: 'lost' });
+      await expect(second).resolves.toBe('second');
+      expect(order).toEqual(['first:start', 'first:aborted', 'second:start']);
     });
 
     it('stops the first holder before another one can take the lock over', async () => {
