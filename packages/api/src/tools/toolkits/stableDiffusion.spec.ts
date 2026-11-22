@@ -89,6 +89,13 @@ describe('buildStableDiffusionRequest', () => {
     });
   });
 
+  it('sends the WebUI txt2img size to a server not identified yet', () => {
+    expect(buildStableDiffusionRequest({ prompt: 'a cat', backend: 'unknown' })).toEqual({
+      path: '/sdapi/v1/txt2img',
+      payload: { prompt: 'a cat', cfg_scale: 4.5, steps: 22, width: 1024, height: 1024 },
+    });
+  });
+
   it('still fits img2img to the input image on stable-diffusion.cpp', () => {
     const { payload } = buildStableDiffusionRequest({
       prompt: 'x',
@@ -139,9 +146,9 @@ describe('detectStableDiffusionBackend', () => {
   it.each([
     ['an unreachable server', () => probe.mockRejectedValueOnce(new Error('ECONNREFUSED'))],
     ['a server error', () => probe.mockResolvedValueOnce({ status: 503, data: '' })],
-  ])('falls back to webui without caching for %s', async (_case, fail) => {
+  ])('reports an unknown backend without caching for %s', async (_case, fail) => {
     fail();
-    await expect(detectStableDiffusionBackend(url, probe, 0)).resolves.toBe('webui');
+    await expect(detectStableDiffusionBackend(url, probe, 0)).resolves.toBe('unknown');
     probe.mockResolvedValueOnce({ status: 200, data: capabilities });
     await expect(detectStableDiffusionBackend(url, probe, 1)).resolves.toBe('sdcpp');
   });

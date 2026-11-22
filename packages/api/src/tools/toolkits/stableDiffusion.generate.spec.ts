@@ -382,6 +382,104 @@ describe('generateStableDiffusionImage', () => {
     });
   });
 
+  describe('when the server has not answered the probe yet', () => {
+    /** sd-server whose capabilities route fails on first contact, others answering as usual. */
+    const probeFails = (
+      failure: 'timeout' | 'error',
+      initial = { id: 'qwen', file: 'qwen.gguf' },
+      statusCode?: number,
+    ) => {
+      serve(initial);
+      const served = mockGet.getMockImplementation()!;
+      mockGet.mockImplementation(async (requestUrl: string, config?: unknown) => {
+        if (requestUrl.endsWith('/sdcpp/v1/capabilities')) {
+          if (failure === 'timeout') {
+            throw new Error('timeout of 60000ms exceeded');
+          }
+          return { status: 503, data: '' };
+        }
+        if (statusCode && requestUrl.endsWith('/sdcpp/v1/models/status')) {
+          return { status: statusCode, data: '' };
+        }
+        return served(requestUrl, config);
+      });
+    };
+    const spyLock = () => ({
+      acquire: jest.fn(async () => 'token'),
+      extend: jest.fn(async () => true),
+      release: jest.fn(async () => true),
+    });
+    const generations = () =>
+      mockPost.mock.calls.filter(([requestUrl]) => String(requestUrl).includes('/sdapi/'));
+
+    it.each([
+      ['times out', 'timeout', { include: [] }],
+      ['answers 503', 'error', { include: [] }],
+      ['times out with the loaded model excluded', 'timeout', { exclude: ['qwen'] }],
+      ['answers 503 with the loaded model excluded', 'error', { exclude: ['qwen'] }],
+    ] as const)(
+      'refuses a model the configuration forbids when the probe %s',
+      async (_case, failure, models) => {
+        probeFails(failure);
+        const lock = spyLock();
+        const result = await generateStableDiffusionImage(
+          { prompt: 'a cat' },
+          { url, req: req(models), lock },
+        );
+        expect(result).toEqual({ error: STABLE_DIFFUSION_MODELS_UNAVAILABLE });
+        expect(generations()).toHaveLength(0);
+        expect(lock.acquire).toHaveBeenCalled();
+      },
+    );
+
+    it('refuses when models are restricted and the model status cannot be read either', async () => {
+      probeFails('error', undefined, 503);
+      const result = await generateStableDiffusionImage(
+        { prompt: 'a cat' },
+        { url, req: req({ include: ['qwen'] }) },
+      );
+      expect(result).toEqual({ error: STABLE_DIFFUSION_MODELS_UNAVAILABLE });
+      expect(generations()).toHaveLength(0);
+    });
+
+    it('generates with an allowed loaded model under the lock', async () => {
+      probeFails('error');
+      const lock = spyLock();
+      const result = await generateStableDiffusionImage(
+        { prompt: 'a cat' },
+        { url, req: req({ include: ['qwen'] }), lock },
+      );
+      expect(result).toEqual({ data: generated('qwen.gguf'), model: 'qwen' });
+      expect(lock.acquire).toHaveBeenCalled();
+    });
+
+    it('sends the WebUI request under the lock without restrictions', async () => {
+      probeFails('timeout');
+      const lock = spyLock();
+      const result = await generateStableDiffusionImage(
+        { prompt: 'a cat' },
+        { url, req: req(), lock },
+      );
+      expect(result).toEqual({ data: generated('qwen.gguf') });
+      expect(lock.acquire).toHaveBeenCalled();
+      expect(generations()).toEqual([
+        [
+          `${url}/sdapi/v1/txt2img`,
+          expect.objectContaining({ width: 1024, height: 1024 }),
+          expect.any(Object),
+        ],
+      ]);
+    });
+
+    it('asks to try again for a requested model', async () => {
+      probeFails('error');
+      await expect(
+        generateStableDiffusionImage({ prompt: 'a cat', model: 'qwen' }, { url, req: req() }),
+      ).resolves.toEqual({ error: STABLE_DIFFUSION_MODELS_UNAVAILABLE });
+      expect(generations()).toHaveLength(0);
+    });
+  });
+
   it('sends the request as it is to a server without a model list', async () => {
     mockGet.mockResolvedValue({ status: 404, data: 'Not Found' });
     mockPost.mockResolvedValue({ status: 200, data: { images: ['x'] } });

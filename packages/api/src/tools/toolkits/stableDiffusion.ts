@@ -3,7 +3,14 @@ import { logger } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
-import type { SdcppModelCheck, SdcppModelStatus, SdcppProbe, SdcppModel, SdcppPost } from './sdcpp';
+import type {
+  SdcppModelCheck,
+  SdcppModelStatus,
+  SdcppCatalogLookup,
+  SdcppProbe,
+  SdcppModel,
+  SdcppPost,
+} from './sdcpp';
 import type { GeneratedImageRegistry, ImageInput, LoadImageInputsParams } from './images';
 import type { DistributedLock } from '~/cache/lock';
 import type { ServerRequest } from '~/types';
@@ -51,9 +58,10 @@ const WEBUI_IMAGE_SIZE = {
 /**
  * The server behind `SD_WEBUI_URL`. stable-diffusion.cpp's `sd-server` renders an omitted txt2img
  * size at the loaded recipe's own size, so it gets none; other WebUI servers (AUTOMATIC1111,
- * Forge) keep getting ours.
+ * Forge) keep getting ours. `unknown` is a server that has not answered the probe yet: it gets
+ * the WebUI request, which works on every server, but may still be an sd-server.
  */
-export type StableDiffusionBackend = 'sdcpp' | 'webui';
+export type StableDiffusionBackend = 'sdcpp' | 'webui' | 'unknown';
 
 /** How long a detected backend is reused before the server is asked again. */
 const BACKEND_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -85,9 +93,9 @@ export function isStableDiffusionCppCapabilities(data: unknown): boolean {
  * `/sdcpp/v1/capabilities`. A definite answer (the contract, or any other non-5xx response) is
  * cached per URL. When the probe fails (no response, or 5xx), the last answer for the URL is
  * kept even if it expired, so a brief outage of the probe route does not change a known
- * sd-server's generation parameters; the next call asks again. A URL never answered before falls
- * back to `webui`: its fixed parameters work on every server, while omitting them on a WebUI
- * server would render with its SD 1.5-era defaults.
+ * sd-server's generation parameters; the next call asks again. A URL never answered before is
+ * `unknown`: it gets WebUI's fixed parameters, which work on every server, while omitting them on
+ * a WebUI server would render with its SD 1.5-era defaults.
  */
 export async function detectStableDiffusionBackend(
   url: string,
@@ -106,7 +114,7 @@ export async function detectStableDiffusionBackend(
     response = undefined;
   }
   if (!response || response.status >= 500) {
-    return cached?.backend ?? 'webui';
+    return cached?.backend ?? 'unknown';
   }
 
   const backend: StableDiffusionBackend =
@@ -190,7 +198,7 @@ export function buildStableDiffusionRequest({
   backend = 'webui',
 }: StableDiffusionRequestParams): StableDiffusionRequest {
   const payload: Record<string, unknown> = { prompt, negative_prompt, ...GENERATION_DEFAULTS };
-  if (backend === 'webui') {
+  if (backend !== 'sdcpp') {
     Object.assign(payload, WEBUI_IMAGE_SIZE);
   }
   if (!image) {
@@ -425,8 +433,8 @@ function sdcppClient(
  * models, the model is chosen (`chooseSdcppModel`), loaded when it is not loaded yet, and checked
  * against the files the result names; a model switched by another client during the generation
  * is retried once. Every sd.cpp generation holds the server lock, also when the model list
- * cannot be read; `librechat.yaml`'s model limits then still apply. Other servers get the
- * request as it is.
+ * cannot be read; `librechat.yaml`'s model limits then still apply. So does a server that has
+ * not answered the probe yet, which may be an sd-server. Other servers get the request as it is.
  */
 export async function generateStableDiffusionImage(
   input: StableDiffusionToolInput,
@@ -456,7 +464,7 @@ export async function generateStableDiffusionImage(
     return { ...request.payload, ...size };
   };
 
-  if (request.backend !== 'sdcpp') {
+  if (request.backend === 'webui') {
     if (input.model) {
       return { error: STABLE_DIFFUSION_MODEL_UNSUPPORTED };
     }
@@ -464,7 +472,10 @@ export async function generateStableDiffusionImage(
   }
 
   const modelsConfig = appConfig?.stableDiffusion?.models;
-  const lookup = await getSdcppCatalog(context.url, sdcppClient(context).probe);
+  const lookup: SdcppCatalogLookup =
+    request.backend === 'sdcpp'
+      ? await getSdcppCatalog(context.url, sdcppClient(context).probe)
+      : { status: 'unavailable' };
   const lockParams = {
     lock: context.lock ?? processLock,
     url: context.url,
