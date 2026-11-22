@@ -49,10 +49,11 @@ export interface RunSdcppVideoJobParams {
    */
   connect: (signal: AbortSignal) => SdcppJobClient;
   /**
-   * Requests made after the generation stopped, to cancel the job and wait for it to end; they
+   * Requests made after the generation stopped, to cancel the job and wait for it to end, each
+   * ending when the given signal fires: the end of the time a cancelled job is waited for. They
    * must not end with `signal`, which has already fired.
    */
-  cleanup: SdcppJobClient;
+  cleanup: (signal: AbortSignal) => SdcppJobClient;
   /** Fires when the caller stops the generation, or the server lock is lost. */
   signal: AbortSignal;
   /** How long the job may run, from the moment it is sent. */
@@ -128,33 +129,52 @@ function hasEnded(response: { status: number; data: unknown }): boolean {
 /**
  * Cancels a job and waits until sd-server reports it ended, within `CANCEL_SETTLE_MS`. A failed
  * cancel request or state read is retried until then, so a passing network error does not free
- * the server while the job still runs. Nothing is thrown: the caller is already ending with
- * another outcome.
+ * the server while the job still runs. The time limit also ends a request still waiting for an
+ * answer, so the call returns once it has passed. Nothing is thrown: the caller is already
+ * ending with another outcome.
  */
 async function cancelJob(
-  cleanup: SdcppJobClient,
+  cleanup: (signal: AbortSignal) => SdcppJobClient,
   jobUrl: string,
   now: () => number,
-  sleep: (ms: number) => Promise<void>,
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>,
 ): Promise<SdcppCancelOutcome> {
   const deadline = now() + CANCEL_SETTLE_MS;
+  const waiting = new AbortController();
+  const timer = setTimeout(() => waiting.abort(), CANCEL_SETTLE_MS);
+  timer.unref?.();
+  const client = cleanup(waiting.signal);
+  const expired = new Promise<never>((_resolve, reject) =>
+    waiting.signal.addEventListener('abort', () => reject(new Error('cancel wait ended')), {
+      once: true,
+    }),
+  );
+  expired.catch(() => undefined);
+  /** An answer arriving after the wait ended is not waited for, even if its request goes on. */
+  const bounded = <T>(request: Promise<T>) => Promise.race([request, expired]);
   let requested = false;
-  while (now() < deadline) {
-    try {
-      if (!requested) {
-        const response = await cleanup.post(`${jobUrl}/cancel`, {});
-        if (response.status === 404) {
+  try {
+    while (now() < deadline && !waiting.signal.aborted) {
+      try {
+        if (!requested) {
+          const response = await bounded(client.post(`${jobUrl}/cancel`, {}));
+          if (response.status === 404) {
+            return 'ended';
+          }
+          requested = response.status >= 200 && response.status < 300;
+        }
+        if (requested && hasEnded(await bounded(client.probe(jobUrl)))) {
           return 'ended';
         }
-        requested = response.status >= 200 && response.status < 300;
+      } catch (error) {
+        logger.debug('[StableDiffusion] Cancelling a video job failed; retrying', error);
       }
-      if (requested && hasEnded(await cleanup.probe(jobUrl))) {
-        return 'ended';
-      }
-    } catch (error) {
-      logger.debug('[StableDiffusion] Cancelling a video job failed; retrying', error);
+      await sleep(Math.min(POLL_MS, Math.max(0, deadline - now())), waiting.signal).catch(
+        () => undefined,
+      );
     }
-    await sleep(POLL_MS);
+  } finally {
+    clearTimeout(timer);
   }
   logger.warn(
     `[StableDiffusion] A cancelled video job did not end within ${CANCEL_SETTLE_MS} ms; releasing the server`,
@@ -198,7 +218,7 @@ export async function runSdcppVideoJob({
   let jobUrl: string | undefined;
   const settle = async () => {
     if (jobUrl) {
-      await cancelJob(cleanup, jobUrl, now, (ms) => sleep(ms));
+      await cancelJob(cleanup, jobUrl, now, sleep);
     }
   };
   try {

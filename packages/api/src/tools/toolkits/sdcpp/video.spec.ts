@@ -57,7 +57,7 @@ describe('runSdcppVideoJob', () => {
       url,
       body,
       connect: () => server.client,
-      cleanup: server.client,
+      cleanup: () => server.client,
       signal: new AbortController().signal,
       budgetMs: 60_000,
       ...clock,
@@ -85,7 +85,7 @@ describe('runSdcppVideoJob', () => {
       url,
       body,
       connect: () => server.client,
-      cleanup: server.client,
+      cleanup: () => server.client,
       signal: new AbortController().signal,
       budgetMs: 60_000,
       ...fakeClock(),
@@ -99,7 +99,7 @@ describe('runSdcppVideoJob', () => {
       url,
       body,
       connect: () => server.client,
-      cleanup: server.client,
+      cleanup: () => server.client,
       signal: new AbortController().signal,
       budgetMs: 60_000,
       ...fakeClock(),
@@ -115,7 +115,7 @@ describe('runSdcppVideoJob', () => {
         url,
         body,
         connect: () => server.client,
-        cleanup: server.client,
+        cleanup: () => server.client,
         signal: new AbortController().signal,
         budgetMs: 60_000,
         ...fakeClock(),
@@ -135,7 +135,7 @@ describe('runSdcppVideoJob', () => {
       url,
       body,
       connect: () => server.client,
-      cleanup: server.client,
+      cleanup: () => server.client,
       signal: new AbortController().signal,
       budgetMs: 3_000,
       ...fakeClock(),
@@ -164,7 +164,7 @@ describe('runSdcppVideoJob', () => {
         url,
         body,
         connect: () => server.client,
-        cleanup: cleanup.client,
+        cleanup: () => cleanup.client,
         signal: controller.signal,
         budgetMs: 60_000,
         ...clock,
@@ -181,7 +181,7 @@ describe('runSdcppVideoJob', () => {
         url,
         body,
         connect: () => server.client,
-        cleanup: server.client,
+        cleanup: () => server.client,
         signal: new AbortController().signal,
         budgetMs: 60_000,
         ...fakeClock(),
@@ -209,7 +209,7 @@ describe('runSdcppVideoJob', () => {
         requestSignal = signal;
         return hanging;
       },
-      cleanup: server.client,
+      cleanup: () => server.client,
       signal: new AbortController().signal,
       budgetMs: 20,
     });
@@ -230,7 +230,7 @@ describe('runSdcppVideoJob', () => {
             signal.addEventListener('abort', () => reject(new Error('canceled')));
           }),
       }),
-      cleanup: server.client,
+      cleanup: () => server.client,
       signal: new AbortController().signal,
       budgetMs: 20,
     });
@@ -253,7 +253,7 @@ describe('runSdcppVideoJob', () => {
       url,
       body,
       connect: () => server.client,
-      cleanup: server.client,
+      cleanup: () => server.client,
       signal: new AbortController().signal,
       budgetMs: 1,
       ...clock,
@@ -286,7 +286,7 @@ describe('runSdcppVideoJob', () => {
       url,
       body,
       connect: () => server.client,
-      cleanup: server.client,
+      cleanup: () => server.client,
       signal: new AbortController().signal,
       budgetMs: 1,
       ...fakeClock(),
@@ -304,7 +304,7 @@ describe('runSdcppVideoJob', () => {
       url,
       body,
       connect: () => server.client,
-      cleanup: server.client,
+      cleanup: () => server.client,
       signal: new AbortController().signal,
       budgetMs: 1_000,
       ...clock,
@@ -312,6 +312,85 @@ describe('runSdcppVideoJob', () => {
     expect(result).toEqual({ status: 'timeout' });
     expect(clock.now()).toBeGreaterThanOrEqual(120_000);
     expect(clock.now()).toBeLessThan(125_000);
+  });
+});
+
+describe('runSdcppVideoJob cancelling with requests that do not answer', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  /** A request that never answers, failing like axios once its signal fires. */
+  const hang = (signal: AbortSignal) =>
+    new Promise<never>((_resolve, reject) =>
+      signal.addEventListener('abort', () => reject(new Error('canceled'))),
+    );
+  /** A running job; the cleanup requests `answers` names answer, the others hang. */
+  const job = (answers: { cancel?: boolean; state?: boolean | 'late' }) => {
+    const running = fakeServer([{ status: 'generating' }]);
+    const signals: AbortSignal[] = [];
+    const cleanup = (signal: AbortSignal): SdcppJobClient => {
+      signals.push(signal);
+      return {
+        post: async () =>
+          answers.cancel ? { status: 200, data: { cancel_requested: true } } : hang(signal),
+        probe: async () => {
+          if (answers.state === 'late') {
+            await new Promise((resolve) => setTimeout(resolve, 130_000));
+            return { status: 200, data: { status: 'cancelled' } };
+          }
+          return answers.state ? { status: 200, data: { status: 'cancelled' } } : hang(signal);
+        },
+      };
+    };
+    return { running, cleanup, signals };
+  };
+  /** Runs a job whose budget ends at once and returns how long it took to come back. */
+  const run = async (cleanup: (signal: AbortSignal) => SdcppJobClient, running: SdcppJobClient) => {
+    const started = Date.now();
+    let ended: number | undefined;
+    const result = runSdcppVideoJob({
+      url,
+      body,
+      connect: () => running,
+      cleanup,
+      signal: new AbortController().signal,
+      budgetMs: 1,
+    }).then((value) => {
+      ended = Date.now();
+      return value;
+    });
+    await jest.advanceTimersByTimeAsync(200_000);
+    return { result: await result, took: (ended ?? Infinity) - started };
+  };
+
+  it('gives up on a cancel request that never answers within the wait', async () => {
+    const { running, cleanup, signals } = job({});
+    const { result, took } = await run(cleanup, running.client);
+    expect(result).toEqual({ status: 'timeout' });
+    expect(took).toBeGreaterThanOrEqual(120_000);
+    expect(took).toBeLessThanOrEqual(121_000);
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it('gives up on a state read that never answers within the wait', async () => {
+    const { running, cleanup } = job({ cancel: true });
+    const { result, took } = await run(cleanup, running.client);
+    expect(result).toEqual({ status: 'timeout' });
+    expect(took).toBeLessThanOrEqual(121_000);
+  });
+
+  it('does not wait for a state answered after the wait', async () => {
+    const { running, cleanup } = job({ cancel: true, state: 'late' });
+    const { result, took } = await run(cleanup, running.client);
+    expect(result).toEqual({ status: 'timeout' });
+    expect(took).toBeLessThanOrEqual(121_000);
+  });
+
+  it('returns as soon as the cancelled job is seen to end', async () => {
+    const { running, cleanup } = job({ cancel: true, state: true });
+    const { result, took } = await run(cleanup, running.client);
+    expect(result).toEqual({ status: 'timeout' });
+    expect(took).toBeLessThan(5_000);
   });
 });
 
