@@ -300,11 +300,12 @@ function scaleWithin(size: Size, range: Record<Side, { lo: number; hi: number }>
  *   whole into the allowed range, or derived from the one side asked for, which is refused when
  *   the derived side falls out of range;
  * - txt2img renders the sides asked for; the others are the model's defaults, scaled as a whole
- *   (or the one side clamped) when they are out of range.
+ *   (or the one side clamped) when they are out of range, also once rounded up to the multiple.
  *
- * On stable-diffusion.cpp a setting equal to the recipe's default is left out of the request, so
- * the recipe applies as before; a default that is needed and unknown is refused with
- * `defaults_unknown`. WebUI servers get every setting, from `WEBUI_GENERATION_DEFAULTS`.
+ * On stable-diffusion.cpp a default size within the limits, also once sd-server rounds it up to
+ * the model's multiple, is left out of the request, so the recipe applies as before; a default
+ * that is needed and unknown is refused with `defaults_unknown`. WebUI servers get every setting,
+ * from `WEBUI_GENERATION_DEFAULTS`.
  */
 export function resolveStableDiffusionSettings(
   params: StableDiffusionSettingsParams,
@@ -344,6 +345,9 @@ export function resolveStableDiffusionSettings(
   const asked = { width: params.width, height: params.height };
   const outOfRange = (side: Side, size: number) =>
     size < bounds[side].min || size > bounds[side].max;
+  /** sd-server rounds a size up to the model's multiple, so a side left to it must stay in range. */
+  const keepsInRange = (side: Side, size: number) =>
+    !outOfRange(side, size) && Math.ceil(size / multiple) * multiple <= bounds[side].max;
 
   const inputWidth = image?.width;
   const inputHeight = image?.height;
@@ -409,7 +413,7 @@ export function resolveStableDiffusionSettings(
   }
   const resolved = size as Size;
   if (asked.width == null && asked.height == null) {
-    const fits = sideNames.every((side) => !outOfRange(side, resolved[side]));
+    const fits = sideNames.every((side) => keepsInRange(side, resolved[side]));
     if (fits && !sendAll) {
       return { ok: true, value };
     }
@@ -430,7 +434,7 @@ export function resolveStableDiffusionSettings(
     };
   }
   for (const side of sideNames) {
-    if (asked[side] != null || sendAll || outOfRange(side, resolved[side])) {
+    if (asked[side] != null || sendAll || !keepsInRange(side, resolved[side])) {
       value[side] = round(side, resolved[side]);
     }
   }

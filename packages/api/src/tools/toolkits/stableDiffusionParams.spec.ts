@@ -196,6 +196,57 @@ describe('resolveStableDiffusionSettings', () => {
       });
     });
 
+    it.each([
+      ['a square', { width: 1000, height: 1000 }, { width: 960, height: 960 }],
+      ['a wide size', { width: 1000, height: 600 }, { width: 960, height: 576 }],
+    ])(
+      'sends %s default that sd-server would round up past the limit, scaled within it',
+      (_case, size, sent) => {
+        expect(
+          resolveStableDiffusionSettings({
+            ...sdcpp,
+            defaults: { ...size, steps: 20 },
+            target: { longestSide: 1000, multiple: 64 },
+            bounds: bounds(1000),
+          }),
+        ).toEqual({ ok: true, value: { steps: 20, ...sent } });
+      },
+    );
+
+    it('leaves an unaligned default to sd-server when rounding it up stays within the limit', () => {
+      expect(
+        resolveStableDiffusionSettings({
+          ...sdcpp,
+          defaults: { width: 1000, height: 1000, steps: 20 },
+          target: { longestSide: 1000, multiple: 64 },
+          bounds: bounds(1024),
+        }),
+      ).toEqual({ ok: true, value: { steps: 20 } });
+    });
+
+    it('sends the default side that would round up past its limit when one side is asked for', () => {
+      expect(
+        resolveStableDiffusionSettings({
+          ...sdcpp,
+          width: 512,
+          defaults: { width: 1024, height: 1000, steps: 20 },
+          target: { longestSide: 1024, multiple: 64 },
+          bounds: bounds(2048, 50, 64, 1000),
+        }),
+      ).toEqual({ ok: true, value: { steps: 20, width: 512, height: 960 } });
+    });
+
+    it('refuses an unaligned default when no multiple fits the limits', () => {
+      expect(
+        resolveStableDiffusionSettings({
+          ...sdcpp,
+          defaults: { width: 1000, height: 1000, steps: 20 },
+          target: { longestSide: 1000, multiple: 64 },
+          bounds: bounds(1000, 50, 980),
+        }),
+      ).toMatchObject({ ok: false, error: { code: 'size_out_of_range' } });
+    });
+
     it("scales a default size above the limits as a whole, keeping the recipe's shape", () => {
       expect(
         resolveStableDiffusionSettings({
