@@ -170,4 +170,32 @@ describe('title generation state', () => {
     expect(response.status).toBe(401);
     expect(response.body).toEqual({ error: 'unauthorized' });
   });
+
+  it('bridges titles published by a legacy endpoint into the independent stream', async () => {
+    const legacy = {
+      get: jest.fn().mockResolvedValue('Legacy title'),
+      set: jest.fn(),
+      delete: jest.fn().mockResolvedValue(true),
+    };
+    const handler = createTitleGenerationStreamHandler({
+      getCache: () => ({
+        get: jest.fn().mockResolvedValue(undefined),
+        set: jest.fn(),
+        delete: jest.fn(),
+      }),
+      getLegacyCache: () => legacy,
+      getConvoTitleState: jest.fn().mockResolvedValue(null),
+      logger: { error: jest.fn() },
+    });
+    const app = express();
+    app.get('/title/:conversationId', async (req, res) => {
+      await handler({ params: req.params, user: { id: 'user-1' }, on: req.on.bind(req) }, res);
+    });
+
+    const response = await request(app).get('/title/chat').buffer(true);
+
+    expect(response.text).toContain('"status":"complete"');
+    expect(response.text).toContain('"title":"Legacy title"');
+    expect(legacy.delete).toHaveBeenCalledWith('user-1-chat');
+  });
 });

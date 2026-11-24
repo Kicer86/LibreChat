@@ -229,6 +229,8 @@ export const pullRequestDisconnect = () => pullRequestOAuthRoot;
 export const genTitle = (conversationId: string) =>
   `${conversationsRoot}/gen_title/${encodeURIComponent(conversationId)}`;
 
+export const genTitleStream = (conversationId: string) => `${genTitle(conversationId)}/stream`;
+
 export const updateConversation = () => `${conversationsRoot}/update`;
 
 export const archiveConversation = () => `${conversationsRoot}/archive`;

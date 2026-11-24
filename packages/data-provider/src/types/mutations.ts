@@ -51,6 +51,15 @@ export type TGenTitleResponse = {
   titleRevision?: number;
 };
 
+export type TTitleGenerationState = {
+  conversationId: string;
+  jobId: string;
+  status: 'pending' | 'complete' | 'error' | 'cancelled' | 'discarded' | 'unavailable';
+  updatedAt: number;
+  title?: string;
+  code?: string;
+};
+
 export type PresetDeleteResponse = {
   acknowledged: boolean;
   deletedCount: number;

@@ -1423,6 +1423,71 @@ export function genTitle(payload: m.TGenTitleRequest): Promise<m.TGenTitleRespon
   return request.get(endpoints.genTitle(payload.conversationId));
 }
 
+const isTerminalTitleState = (state: m.TTitleGenerationState): boolean =>
+  state.status !== 'pending';
+
+function readTitleFrame(frame: string): m.TTitleGenerationState | undefined {
+  const lines = frame.split(/\r?\n/);
+  if (!lines.some((line) => line === 'event: title')) {
+    return;
+  }
+  const data = lines
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart())
+    .join('\n');
+  if (!data) {
+    return;
+  }
+  return JSON.parse(data) as m.TTitleGenerationState;
+}
+
+export async function observeTitleGeneration({
+  conversationId,
+  signal,
+  onState,
+}: m.TGenTitleRequest & {
+  signal?: AbortSignal;
+  onState: (state: m.TTitleGenerationState) => void;
+}): Promise<void> {
+  const response = await request.authenticatedFetch(endpoints.genTitleStream(conversationId), {
+    headers: { Accept: 'text/event-stream' },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Title stream failed with status ${response.status}`);
+  }
+  if (response.body == null) {
+    throw new Error('Title stream response has no body');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() ?? '';
+      for (const frame of frames) {
+        const state = readTitleFrame(frame);
+        if (state == null) {
+          continue;
+        }
+        onState(state);
+        if (isTerminalTitleState(state)) {
+          return;
+        }
+      }
+      if (done) {
+        throw new Error('Title stream ended before a terminal state');
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
 export const listMessages = (params?: q.MessagesListParams): Promise<q.MessagesListResponse> => {
   return request.get(endpoints.messages(params ?? {}));
 };

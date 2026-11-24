@@ -333,6 +333,8 @@ router.get(
   '/gen_title/:conversationId/stream',
   createTitleGenerationStreamHandler({
     getCache: () => getLogStores(CacheKeys.TITLE_GENERATION),
+    getLegacyCache: () => getLogStores(CacheKeys.GEN_TITLE),
+    getConvoTitleState: db.getConvoTitleState,
     logger,
   }),
 );

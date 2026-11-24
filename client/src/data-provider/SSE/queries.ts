@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ACTIVE_JOBS_SUCCESSOR_GRACE_MS } from '@librechat/chat/react';
-import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { apiBaseUrl, QueryKeys, request, dataService } from 'librechat-data-provider';
-import type { TConversation } from 'librechat-data-provider';
+import type { TConversation, TTitleGenerationState } from 'librechat-data-provider';
 import type { StreamStatusResponse } from '@librechat/chat';
 import {
-  isNotFoundError,
   updateConvoInAllQueries,
   setDocumentTitle,
   findManualConvoTitleInAllQueries,
@@ -47,12 +46,7 @@ export interface ActiveJobsResponse {
  * Stores conversationIds that need title generation once their job completes */
 const titleQueue = new Set<string>();
 const processedTitles = new Set<string>();
-
-/** Conversations whose eager (immediate-mode) title fetch 404'd while the stream
- * was still active. They wait for stream completion before fetching again instead
- * of busy-looping — covers a per-endpoint `final` override under a global
- * `immediate` default. */
-const deferredTitles = new Set<string>();
+const titleControllers = new Map<string, AbortController>();
 
 /** Listeners to notify when queue changes (for non-resumable streams like assistants) */
 const queueListeners = new Set<() => void>();
@@ -67,9 +61,10 @@ export function queueTitleGeneration(conversationId: string) {
 
 /** Drops all module-level title state; called when a session ends so the next account starts clean. */
 export function clearTitleGenerationState() {
+  titleControllers.forEach((controller) => controller.abort());
+  titleControllers.clear();
   titleQueue.clear();
   processedTitles.clear();
-  deferredTitles.clear();
   queueListeners.forEach((listener) => listener());
 }
 
@@ -78,22 +73,38 @@ export function isTitleGenerationProcessed(conversationId: string): boolean {
 }
 
 export function markTitleGenerationProcessed(conversationId: string) {
+  titleControllers.get(conversationId)?.abort();
+  titleControllers.delete(conversationId);
   processedTitles.add(conversationId);
   titleQueue.delete(conversationId);
-  deferredTitles.delete(conversationId);
   queueListeners.forEach((listener) => listener());
 }
+
+const waitForTitleReconnect = (signal: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const finish = () => {
+      window.clearTimeout(timeout);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timeout = window.setTimeout(finish, 1000);
+    signal.addEventListener('abort', finish, { once: true });
+  });
 
 /**
  * Hook to process the title generation queue.
  *
  * Timing is driven by the server's effective default (`titleGenerationTiming`):
- * - `immediate` (default): fetch the title in parallel with the active stream so
+ * - `immediate` (default): observe the title in parallel with the active stream so
  *   it appears while the response is still streaming.
- * - `final` (legacy): fetch only after the stream completes.
+ * - `final` (legacy): subscribe only after the stream completes.
  *
- * The title query retries on 404 (server still generating) so a transient
- * not-ready response is never treated as final (#13318).
+ * The dedicated title stream outlives the main chat stream. A transport disconnect
+ * reconnects without a fixed retry budget; only a terminal title state ends observation.
  * Place this high in the component tree (e.g., Nav.tsx).
  */
 export function useTitleGeneration(enabled = true) {
@@ -127,7 +138,7 @@ export function useTitleGeneration(enabled = true) {
       if (processedTitles.has(conversationId)) {
         continue;
       }
-      const eager = timing === 'immediate' && !deferredTitles.has(conversationId);
+      const eager = timing === 'immediate';
       if (eager || !activeSet.has(conversationId)) {
         eligible.push(conversationId);
       }
@@ -145,76 +156,76 @@ export function useTitleGeneration(enabled = true) {
     });
   }, [queueVersion]);
 
-  // Fetch titles for ready conversations.
-  const titleQueries = useQueries({
-    queries: readyToFetch.map((conversationId) => ({
-      queryKey: genTitleQueryKey(conversationId),
-      queryFn: () => dataService.genTitle({ conversationId }),
-      // Gate on `enabled` so no /gen_title request fires while unauthenticated
-      // (e.g. after logout) even if the module-level queue still holds IDs.
-      enabled,
-      staleTime: Infinity,
-      /** Retry only on 404 (title still generating server-side) so a transient
-       * not-ready response is never treated as final. All other errors are
-       * terminal. Bounded retry adapted from PR #13329. */
-      retry: (failureCount: number, error: unknown) => isNotFoundError(error) && failureCount < 3,
-      retryDelay: () => 5_000,
-    })),
-  });
-
   useEffect(() => {
-    const activeSet = new Set(activeJobIds);
-    titleQueries.forEach((titleQuery, index) => {
-      const conversationId = readyToFetch[index];
-      if (!conversationId || processedTitles.has(conversationId)) {
+    if (!enabled) {
+      titleControllers.forEach((controller) => controller.abort());
+      titleControllers.clear();
+      return;
+    }
+
+    const finish = (conversationId: string) => {
+      markTitleGenerationProcessed(conversationId);
+      setReadyToFetch((prev) => prev.filter((id) => id !== conversationId));
+    };
+    const apply = (conversationId: string, state: TTitleGenerationState) => {
+      if (state.status !== 'complete' || state.title == null) {
+        if (state.status !== 'pending') {
+          finish(conversationId);
+        }
         return;
       }
-
-      if (titleQuery.isSuccess && titleQuery.data) {
-        const incoming = titleQuery.data;
-        const titleState =
-          findManualConvoTitleInAllQueries(queryClient, conversationId, incoming) ?? incoming;
-        const applyTitle = (convo: TConversation): TConversation => ({ ...convo, ...titleState });
-        queryClient.setQueryData<TConversation>(
-          [QueryKeys.conversation, conversationId],
-          (convo) => (convo ? applyTitle(convo) : convo),
-        );
-        updateConvoInAllQueries(queryClient, conversationId, applyTitle);
-        const title =
-          queryClient.getQueryData<TConversation>([QueryKeys.conversation, conversationId])
-            ?.title ?? incoming.title;
-        // Only update document title if this conversation is currently active
-        if (window.location.pathname.includes(conversationId)) {
-          setDocumentTitle(title);
-        }
-        markTitleGenerationProcessed(conversationId);
-        setReadyToFetch((prev) => prev.filter((id) => id !== conversationId));
-      } else if (titleQuery.isError) {
-        // Retries are exhausted here (the query only retries on 404). A title may
-        // still be generated *after* the stream completes (final mode generates
-        // only once the response ends), so don't treat the first 404 as final —
-        // guarantee one fresh, full-budget fetch cycle that runs post-completion.
-        if (activeSet.has(conversationId)) {
-          // Failed while still streaming: drop and clear so the completion
-          // transition re-promotes a fresh fetch (instead of busy-looping).
-          deferredTitles.add(conversationId);
-          queryClient.removeQueries(genTitleQueryKey(conversationId));
-          setReadyToFetch((prev) => prev.filter((id) => id !== conversationId));
-        } else if (!deferredTitles.has(conversationId)) {
-          // First failure at/after completion without a prior deferral: grant one
-          // fresh cycle. Polling has stopped (no re-promotion), so reset the query
-          // in place — `resetQueries` refetches active observers with a fresh retry
-          // budget, unlike `removeQueries`, which leaves the observer in error state.
-          deferredTitles.add(conversationId);
-          queryClient.resetQueries(genTitleQueryKey(conversationId));
-        } else {
-          // The post-completion fetch also failed — the title is genuinely absent.
-          markTitleGenerationProcessed(conversationId);
-          setReadyToFetch((prev) => prev.filter((id) => id !== conversationId));
-        }
+      const incoming = { title: state.title };
+      const titleState =
+        findManualConvoTitleInAllQueries(queryClient, conversationId, incoming) ?? incoming;
+      const applyTitle = (convo: TConversation): TConversation => ({ ...convo, ...titleState });
+      queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (convo) =>
+        convo ? applyTitle(convo) : convo,
+      );
+      updateConvoInAllQueries(queryClient, conversationId, applyTitle);
+      const title =
+        queryClient.getQueryData<TConversation>([QueryKeys.conversation, conversationId])?.title ??
+        state.title;
+      if (window.location.pathname.includes(conversationId)) {
+        setDocumentTitle(title);
       }
-    });
-  }, [titleQueries, readyToFetch, queryClient, activeJobIds]);
+      finish(conversationId);
+    };
+
+    for (const conversationId of readyToFetch) {
+      if (processedTitles.has(conversationId) || titleControllers.has(conversationId)) {
+        continue;
+      }
+      const controller = new AbortController();
+      titleControllers.set(conversationId, controller);
+      void (async () => {
+        while (!controller.signal.aborted && !processedTitles.has(conversationId)) {
+          try {
+            await dataService.observeTitleGeneration({
+              conversationId,
+              signal: controller.signal,
+              onState: (state) => apply(conversationId, state),
+            });
+          } catch {
+            if (!controller.signal.aborted) {
+              await waitForTitleReconnect(controller.signal);
+            }
+          }
+        }
+      })().finally(() => {
+        if (titleControllers.get(conversationId) === controller) {
+          titleControllers.delete(conversationId);
+        }
+      });
+    }
+  }, [enabled, queryClient, readyToFetch]);
+
+  useEffect(
+    () => () => {
+      titleControllers.forEach((controller) => controller.abort());
+      titleControllers.clear();
+    },
+    [],
+  );
 }
 
 /**

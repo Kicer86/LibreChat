@@ -105,6 +105,8 @@ type TitleGenerationStreamRequest = {
 
 type TitleGenerationStreamDependencies = {
   getCache: () => TitleCache;
+  getLegacyCache?: () => TitleCache;
+  getConvoTitleState?: ConversationMethods['getConvoTitleState'];
   logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
   delay?: (milliseconds: number) => Promise<void>;
   pollMs?: number;
@@ -141,7 +143,24 @@ export function createTitleGenerationStreamHandler(
     try {
       const cache = deps.getCache();
       while (!closed) {
-        const state = parseTitleGenerationState(await cache.get(key));
+        let state = parseTitleGenerationState(await cache.get(key));
+        if (state == null && deps.getLegacyCache != null) {
+          const legacy = deps.getLegacyCache();
+          const generated = await legacy.get(key);
+          if (generated != null) {
+            const current = await deps.getConvoTitleState?.(userId, req.params.conversationId);
+            const title =
+              current?.titleSetByUser && current.title != null ? current.title : generated;
+            state = {
+              conversationId: req.params.conversationId,
+              jobId: 'legacy',
+              status: 'complete',
+              title,
+              updatedAt: Date.now(),
+            };
+            await legacy.delete(key);
+          }
+        }
         if (state != null) {
           const serialized = JSON.stringify(state);
           if (serialized !== last) {
