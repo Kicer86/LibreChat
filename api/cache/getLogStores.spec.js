@@ -8,8 +8,16 @@ const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const getLogStores = require('./getLogStores');
 const appConfigCacheArgs = standardCache.mock.calls.find(([key]) => key === CacheKeys.APP_CONFIG);
+const titleGenerationCacheArgs = standardCache.mock.calls.find(
+  ([key]) => key === CacheKeys.TITLE_GENERATION,
+);
 
 describe('auditCache', () => {
+  it('registers the title generation state cache', () => {
+    expect(getLogStores(CacheKeys.TITLE_GENERATION)).toBeDefined();
+    expect(titleGenerationCacheArgs).toEqual([CacheKeys.TITLE_GENERATION]);
+  });
+
   it('requires APP_CONFIG publication errors to propagate', () => {
     expect(appConfigCacheArgs).toEqual([
       CacheKeys.APP_CONFIG,
