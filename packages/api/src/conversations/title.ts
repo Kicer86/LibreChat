@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ConversationMethods } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -9,6 +10,167 @@ type TitleCache = {
   set: (key: string, title: string, ttl: number) => Promise<boolean>;
   delete: (key: string) => Promise<boolean>;
 };
+
+const TITLE_GENERATION_STATE_TTL = 86_400_000;
+
+export type TitleGenerationState = {
+  conversationId: string;
+  jobId: string;
+  status: 'pending' | 'complete' | 'error' | 'cancelled' | 'discarded' | 'unavailable';
+  updatedAt: number;
+  title?: string;
+  code?: string;
+};
+
+export type TitleGenerationTracker = {
+  jobId: string;
+  pending: () => Promise<void>;
+  complete: (title: string) => Promise<void>;
+  error: (code: string) => Promise<void>;
+  cancelled: () => Promise<void>;
+  discarded: () => Promise<void>;
+  unavailable: () => Promise<void>;
+};
+
+const isTerminalTitleState = (state: TitleGenerationState): boolean => state.status !== 'pending';
+
+function parseTitleGenerationState(value: string | undefined): TitleGenerationState | undefined {
+  if (value == null) {
+    return;
+  }
+  try {
+    const state = JSON.parse(value) as Partial<TitleGenerationState>;
+    if (
+      typeof state.conversationId !== 'string' ||
+      typeof state.jobId !== 'string' ||
+      typeof state.status !== 'string' ||
+      typeof state.updatedAt !== 'number'
+    ) {
+      return;
+    }
+    return state as TitleGenerationState;
+  } catch {
+    return;
+  }
+}
+
+export function createTitleGenerationTracker({
+  cache,
+  userId,
+  conversationId,
+  jobId = randomUUID(),
+}: {
+  cache: TitleCache;
+  userId: string;
+  conversationId: string;
+  jobId?: string;
+}): TitleGenerationTracker {
+  const key = `${userId}-${conversationId}`;
+  const write = async (
+    status: TitleGenerationState['status'],
+    details?: Pick<TitleGenerationState, 'title' | 'code'>,
+  ): Promise<void> => {
+    if (status !== 'pending') {
+      const current = parseTitleGenerationState(await cache.get(key));
+      if (current?.jobId !== jobId) {
+        return;
+      }
+    }
+    const state: TitleGenerationState = {
+      conversationId,
+      jobId,
+      status,
+      updatedAt: Date.now(),
+      ...details,
+    };
+    await cache.set(key, JSON.stringify(state), TITLE_GENERATION_STATE_TTL);
+  };
+
+  return {
+    jobId,
+    pending: () => write('pending'),
+    complete: (title: string) => write('complete', { title }),
+    error: (code = 'title_generation_failed') => write('error', { code }),
+    cancelled: () => write('cancelled'),
+    discarded: () => write('discarded'),
+    unavailable: () => write('unavailable'),
+  };
+}
+
+type TitleGenerationStreamRequest = {
+  params: { conversationId: string };
+  user?: { id: string };
+  on: (event: 'close', listener: () => void) => unknown;
+};
+
+type TitleGenerationStreamDependencies = {
+  getCache: () => TitleCache;
+  logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
+  delay?: (milliseconds: number) => Promise<void>;
+  pollMs?: number;
+  heartbeatMs?: number;
+};
+
+/** Observes title work independently of the main generation SSE connection. */
+export function createTitleGenerationStreamHandler(
+  deps: TitleGenerationStreamDependencies,
+): (req: TitleGenerationStreamRequest, res: Response) => Promise<Response | void> {
+  return async function titleGenerationStreamHandler(req, res) {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    res.write('retry: 1000\n\n');
+
+    let closed = false;
+    let last = '';
+    let lastHeartbeat = Date.now();
+    req.on('close', () => {
+      closed = true;
+    });
+
+    const key = `${userId}-${req.params.conversationId}`;
+    const pollMs = deps.pollMs ?? 1000;
+    const heartbeatMs = deps.heartbeatMs ?? 15_000;
+    try {
+      const cache = deps.getCache();
+      while (!closed) {
+        const state = parseTitleGenerationState(await cache.get(key));
+        if (state != null) {
+          const serialized = JSON.stringify(state);
+          if (serialized !== last) {
+            res.write(`event: title\ndata: ${serialized}\n\n`);
+            last = serialized;
+          }
+          if (isTerminalTitleState(state)) {
+            res.end();
+            return;
+          }
+        }
+
+        const now = Date.now();
+        if (now - lastHeartbeat >= heartbeatMs) {
+          res.write(': heartbeat\n\n');
+          lastHeartbeat = now;
+        }
+        await (deps.delay ?? delay)(pollMs);
+      }
+    } catch (error) {
+      deps.logger.error('[title_stream] Title state lookup failed', getSafeErrorMetadata(error));
+      if (!closed) {
+        const state = JSON.stringify({ status: 'error', code: 'title_state_unavailable' });
+        res.write(`event: title\ndata: ${state}\n\n`);
+        res.end();
+      }
+    }
+  };
+}
 
 type TitlePublication = {
   ctx: ConversationWriteContext;

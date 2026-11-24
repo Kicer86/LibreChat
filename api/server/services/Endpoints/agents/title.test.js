@@ -6,6 +6,12 @@ const mockCache = {
   set: jest.fn((key, value) => mockCacheStore.set(key, value)),
   delete: jest.fn((key) => mockCacheStore.delete(key)),
 };
+const mockTitleStateStore = new Map();
+const mockTitleStateCache = {
+  get: jest.fn((key) => mockTitleStateStore.get(key)),
+  set: jest.fn((key, value) => mockTitleStateStore.set(key, value)),
+  delete: jest.fn((key) => mockTitleStateStore.delete(key)),
+};
 const mockSaveConvo = jest.fn();
 const mockGetConvo = jest.fn();
 
@@ -19,7 +25,9 @@ jest.mock('@librechat/data-schemas', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
 
-jest.mock('~/cache/getLogStores', () => jest.fn(() => mockCache));
+jest.mock('~/cache/getLogStores', () =>
+  jest.fn((key) => (key === 'TITLE_GENERATION' ? mockTitleStateCache : mockCache)),
+);
 
 jest.mock('~/models', () => ({
   saveConvo: (...args) => mockSaveConvo(...args),
@@ -41,9 +49,17 @@ describe('agents addTitle', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockCacheStore.clear();
+    mockTitleStateStore.clear();
     mockCache.get.mockReset().mockImplementation((key) => mockCacheStore.get(key));
     mockCache.set.mockReset().mockImplementation((key, value) => mockCacheStore.set(key, value));
     mockCache.delete.mockReset().mockImplementation((key) => mockCacheStore.delete(key));
+    mockTitleStateCache.get.mockReset().mockImplementation((key) => mockTitleStateStore.get(key));
+    mockTitleStateCache.set
+      .mockReset()
+      .mockImplementation((key, value) => mockTitleStateStore.set(key, value));
+    mockTitleStateCache.delete
+      .mockReset()
+      .mockImplementation((key) => mockTitleStateStore.delete(key));
     mockSaveConvo.mockReset().mockImplementation(async (_ctx, data) => data);
     mockGetConvo.mockReset().mockResolvedValue(null);
   });

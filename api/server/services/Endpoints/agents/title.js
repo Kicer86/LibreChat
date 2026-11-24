@@ -1,4 +1,9 @@
-const { isEnabled, publishConversationTitle, raceWithTimeout } = require('@librechat/api');
+const {
+  isEnabled,
+  publishConversationTitle,
+  raceWithTimeout,
+  createTitleGenerationTracker,
+} = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const getLogStores = require('~/cache/getLogStores');
@@ -46,30 +51,42 @@ const addTitle = async (
     onTitleGenerated,
   },
 ) => {
-  const { TITLE_CONVO = true } = process.env ?? {};
-  if (!isEnabled(TITLE_CONVO)) {
-    return;
-  }
-
-  if (client.options.titleConvo === false) {
-    return;
-  }
-
-  // Skip title generation for temporary conversations
-  if (req?.body?.isTemporary) {
-    return;
-  }
-
   const convoId = conversationId ?? response?.conversationId;
   if (!convoId) {
     logger.warn('[addTitle] Missing conversationId; skipping title generation');
     return;
   }
 
+  const userId = req?.user?.id;
+  const tracker =
+    userId == null
+      ? null
+      : createTitleGenerationTracker({
+          cache: getLogStores(CacheKeys.TITLE_GENERATION),
+          userId,
+          conversationId: convoId,
+        });
+  const { TITLE_CONVO = true } = process.env ?? {};
+  if (!isEnabled(TITLE_CONVO)) {
+    await tracker?.unavailable();
+    return;
+  }
+
+  if (client.options.titleConvo === false) {
+    await tracker?.unavailable();
+    return;
+  }
+
+  // Skip title generation for temporary conversations
+  if (req?.body?.isTemporary) {
+    await tracker?.unavailable();
+    return;
+  }
+
   const titleCache = getLogStores(CacheKeys.GEN_TITLE);
   const key = `${req.user.id}-${convoId}`;
   try {
-    let titlePromise;
+    await tracker?.pending();
     let abortController = new AbortController();
     /** Propagate a request abort (Stop) to the title generation so a cancelled
      *  turn does not consume the title model or surface a title. */
@@ -80,24 +97,20 @@ const addTitle = async (
         signal.addEventListener('abort', () => abortController.abort(), { once: true });
       }
     }
-    if (client && typeof client.titleConvo === 'function') {
-      titlePromise = raceWithTimeout(
-        client
-          .titleConvo({
-            text,
-            abortController,
-            immediate,
-          })
-          .catch((error) => {
-            logger.error('Client title error:', error);
-          }),
-        45000,
-        logger,
-        'Title generation',
-      );
-    } else {
+    if (!client || typeof client.titleConvo !== 'function') {
+      await tracker?.unavailable();
       return;
     }
+    const titlePromise = raceWithTimeout(
+      client.titleConvo({
+        text,
+        abortController,
+        immediate,
+      }),
+      45000,
+      logger,
+      'Title generation',
+    );
 
     const generatedTitle = await titlePromise;
     if (!abortController.signal.aborted) {
@@ -106,11 +119,17 @@ const addTitle = async (
 
     if (!generatedTitle) {
       logger.debug(`[${key}] No title generated`);
+      if (abortController.signal.aborted) {
+        await tracker?.cancelled();
+      } else {
+        await tracker?.error('title_generation_failed');
+      }
       return;
     }
 
     const title = resolveConversationTitle(req, generatedTitle);
     if (title == null) {
+      await tracker?.unavailable();
       return;
     }
 
@@ -131,8 +150,14 @@ const addTitle = async (
         onTitleGenerated,
       },
     );
+    if (discardSignal?.aborted) {
+      await tracker?.discarded();
+    } else {
+      await tracker?.complete(title);
+    }
   } catch (error) {
     logger.error('Error generating title:', error);
+    await tracker?.error('title_generation_failed').catch(() => {});
   }
 };
 

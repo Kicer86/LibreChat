@@ -34,6 +34,7 @@ const {
   backgroundTaskRegistry,
   createSubagentThreadViewHandler,
   createGeneratedTitleHandler,
+  createTitleGenerationStreamHandler,
   createRenameConversationHandler,
   createMarkConvoSeenHandler,
   createMarkConvoUnreadHandler,
@@ -324,6 +325,14 @@ router.get(
   createGeneratedTitleHandler({
     getConvoTitleState: db.getConvoTitleState,
     getCache: () => getLogStores(CacheKeys.GEN_TITLE),
+    logger,
+  }),
+);
+
+router.get(
+  '/gen_title/:conversationId/stream',
+  createTitleGenerationStreamHandler({
+    getCache: () => getLogStores(CacheKeys.TITLE_GENERATION),
     logger,
   }),
 );

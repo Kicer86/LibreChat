@@ -5534,6 +5534,10 @@ export enum CacheKeys {
    */
   GEN_TITLE = 'GEN_TITLE',
   /**
+   * Key for title-generation job state observed by the dedicated title stream.
+   */
+  TITLE_GENERATION = 'TITLE_GENERATION',
+  /**
    * Key for the tools cache.
    */
   TOOLS = 'TOOLS',

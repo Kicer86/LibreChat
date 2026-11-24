@@ -1,6 +1,10 @@
 import express from 'express';
 import request from 'supertest';
-import { createGeneratedTitleHandler } from './title';
+import {
+  createGeneratedTitleHandler,
+  createTitleGenerationStreamHandler,
+  createTitleGenerationTracker,
+} from './title';
 
 function setup(authenticated = true) {
   const cache = {
@@ -71,5 +75,99 @@ describe('generated title polling', () => {
     const { app, cache } = setup(false);
     expect((await request(app).get('/title/chat')).status).toBe(401);
     expect(cache.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('title generation state', () => {
+  it('does not let an older job replace a newer job state', async () => {
+    const values = new Map<string, string>();
+    const cache = {
+      get: jest.fn(async (key: string) => values.get(key)),
+      set: jest.fn(async (key: string, value: string) => {
+        values.set(key, value);
+        return true;
+      }),
+      delete: jest.fn(async (key: string) => values.delete(key)),
+    };
+    const older = createTitleGenerationTracker({
+      cache,
+      userId: 'user-1',
+      conversationId: 'chat',
+      jobId: 'older',
+    });
+    const newer = createTitleGenerationTracker({
+      cache,
+      userId: 'user-1',
+      conversationId: 'chat',
+      jobId: 'newer',
+    });
+
+    await older.pending();
+    await newer.pending();
+    await older.complete('Stale title');
+    await newer.complete('Current title');
+
+    expect(JSON.parse(values.get('user-1-chat') ?? '{}')).toMatchObject({
+      jobId: 'newer',
+      status: 'complete',
+      title: 'Current title',
+    });
+  });
+
+  it('streams pending and completed states independently of the chat stream', async () => {
+    const states = [
+      JSON.stringify({
+        jobId: 'job-1',
+        conversationId: 'chat',
+        status: 'pending',
+        updatedAt: 1,
+      }),
+      JSON.stringify({
+        jobId: 'job-1',
+        conversationId: 'chat',
+        status: 'complete',
+        title: 'Generated title',
+        updatedAt: 2,
+      }),
+    ];
+    const complete = states[1];
+    const cache = {
+      get: jest.fn(async () => states.shift() ?? complete),
+      set: jest.fn(),
+      delete: jest.fn(),
+    };
+    const handler = createTitleGenerationStreamHandler({
+      getCache: () => cache,
+      logger: { error: jest.fn() },
+      delay: jest.fn().mockResolvedValue(undefined),
+    });
+    const app = express();
+    app.get('/title/:conversationId', async (req, res) => {
+      await handler({ params: req.params, user: { id: 'user-1' }, on: req.on.bind(req) }, res);
+    });
+
+    const response = await request(app).get('/title/chat').buffer(true);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toContain('text/event-stream');
+    expect(response.text).toContain('"status":"pending"');
+    expect(response.text).toContain('"status":"complete"');
+    expect(response.text).toContain('"title":"Generated title"');
+  });
+
+  it('rejects an unauthenticated title stream before opening SSE', async () => {
+    const handler = createTitleGenerationStreamHandler({
+      getCache: () => ({ get: jest.fn(), set: jest.fn(), delete: jest.fn() }),
+      logger: { error: jest.fn() },
+    });
+    const app = express();
+    app.get('/title/:conversationId', async (req, res) => {
+      await handler({ params: req.params, on: req.on.bind(req) }, res);
+    });
+
+    const response = await request(app).get('/title/chat');
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({ error: 'unauthorized' });
   });
 });
