@@ -35,8 +35,6 @@ export function useStreamStatus(conversationId: string | undefined, enabled = tr
   });
 }
 
-export const genTitleQueryKey = (conversationId: string) => ['genTitle', conversationId] as const;
-
 /** Response type for active jobs query */
 export interface ActiveJobsResponse {
   activeJobIds: string[];

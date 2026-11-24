@@ -4,6 +4,7 @@ const {
   getAttachmentTitleText,
   publishConversationTitle,
   publishFallbackConversationTitle,
+  createTitleGenerationTracker,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
@@ -52,19 +53,32 @@ Title:`;
  * @param {string} params.conversationId - Conversation ID
  */
 const addTitle = async (req, { text, responseText, conversationId }) => {
+  const userId = req?.user?.id;
+  const tracker =
+    userId == null
+      ? null
+      : createTitleGenerationTracker({
+          cache: getLogStores(CacheKeys.TITLE_GENERATION),
+          logger,
+          userId,
+          conversationId,
+        });
   const { TITLE_CONVO = 'true' } = process.env ?? {};
   if (!isEnabled(TITLE_CONVO)) {
+    await tracker?.unavailable();
     return;
   }
 
   // Skip title generation for temporary conversations
   if (req?.body?.isTemporary) {
+    await tracker?.unavailable();
     return;
   }
 
   const titleCache = getLogStores(CacheKeys.GEN_TITLE);
 
   try {
+    await tracker?.pending();
     const { openai } = await initializeClient({ req });
     const generatedTitle = await generateTitle({ openai, text, responseText });
     const title = resolveConversationTitle(req, generatedTitle);
@@ -78,10 +92,15 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
       expiredAt: req?.resolvedConversation?.expiredAt,
       interfaceConfig: req?.config?.interfaceConfig,
     };
-    await publishConversationTitle(
+    const publishedTitle = await publishConversationTitle(
       { saveConvo, getConvo, titleCache },
       { ctx: reqCtx, conversationId, title },
     );
+    if (publishedTitle != null) {
+      await tracker?.complete(publishedTitle);
+    } else {
+      await tracker?.error('title_publication_failed');
+    }
   } catch (error) {
     logger.error('[addTitle] Error generating title:', error);
     /**
@@ -92,15 +111,17 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
      */
     const fallbackSource = text || getAttachmentTitleText(req?.body?.files) || responseText || '';
     if (!fallbackSource) {
+      await tracker?.error('title_generation_failed').catch(() => {});
       return;
     }
     const submittedFallback =
       fallbackSource.length > 40 ? fallbackSource.substring(0, 37) + '...' : fallbackSource;
     const fallbackTitle = resolveConversationTitle(req, submittedFallback);
     if (fallbackTitle == null) {
+      await tracker?.unavailable().catch(() => {});
       return;
     }
-    await publishFallbackConversationTitle(
+    const publishedTitle = await publishFallbackConversationTitle(
       { saveConvo, getConvo, titleCache, logger },
       {
         ctx: {
@@ -113,6 +134,11 @@ const addTitle = async (req, { text, responseText, conversationId }) => {
         title: fallbackTitle,
       },
     );
+    if (publishedTitle != null) {
+      await tracker?.complete(publishedTitle).catch(() => {});
+    } else {
+      await tracker?.error('title_publication_failed').catch(() => {});
+    }
   }
 };
 

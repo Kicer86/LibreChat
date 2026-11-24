@@ -1,6 +1,12 @@
 const mockCache = {
   set: jest.fn(),
 };
+const mockTitleStateStore = new Map();
+const mockTitleStateCache = {
+  get: jest.fn((key) => mockTitleStateStore.get(key)),
+  set: jest.fn((key, value) => mockTitleStateStore.set(key, value)),
+  delete: jest.fn((key) => mockTitleStateStore.delete(key)),
+};
 const mockSaveConvo = jest.fn();
 const mockGetConvo = jest.fn();
 const mockInitializeClient = jest.fn();
@@ -15,7 +21,9 @@ jest.mock('@librechat/data-schemas', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
 
-jest.mock('~/cache/getLogStores', () => jest.fn(() => mockCache));
+jest.mock('~/cache/getLogStores', () =>
+  jest.fn((key) => (key === 'TITLE_GENERATION' ? mockTitleStateCache : mockCache)),
+);
 jest.mock(
   './initalize',
   () =>
@@ -29,9 +37,23 @@ jest.mock('~/models', () => ({
 
 const addTitle = require('./title');
 
+const getTitleState = (conversationId) => {
+  const key = `user-1-${conversationId}`;
+  const jobId = mockTitleStateStore.get(key);
+  return JSON.parse(mockTitleStateStore.get(`${key}:${jobId}`) ?? '{}');
+};
+
 describe('assistants addTitle content policy', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockTitleStateStore.clear();
+    mockTitleStateCache.get.mockReset().mockImplementation((key) => mockTitleStateStore.get(key));
+    mockTitleStateCache.set
+      .mockReset()
+      .mockImplementation((key, value) => mockTitleStateStore.set(key, value));
+    mockTitleStateCache.delete
+      .mockReset()
+      .mockImplementation((key) => mockTitleStateStore.delete(key));
     mockSaveConvo.mockImplementation(async (_ctx, data) => data);
     mockGetConvo.mockResolvedValue(null);
   });
@@ -45,6 +67,7 @@ describe('assistants addTitle content policy', () => {
     expect(mockInitializeClient).not.toHaveBeenCalled();
     expect(mockCache.set).not.toHaveBeenCalled();
     expect(mockSaveConvo).not.toHaveBeenCalled();
+    expect(getTitleState('conversation-1')).toMatchObject({ status: 'unavailable' });
   });
 
   it('replaces a blocked generated title before caching or saving it', async () => {
@@ -84,6 +107,10 @@ describe('assistants addTitle content policy', () => {
       }),
       expect.objectContaining({ noUpsert: true }),
     );
+    expect(getTitleState('conversation-generated')).toMatchObject({
+      status: 'complete',
+      title: 'New Chat',
+    });
   });
 
   it('replaces a blocked submitted-text fallback before caching or saving it', async () => {
@@ -121,6 +148,24 @@ describe('assistants addTitle content policy', () => {
       }),
       expect.objectContaining({ noUpsert: true }),
     );
+    expect(getTitleState('conversation-1')).toMatchObject({
+      status: 'complete',
+      title: 'New Chat',
+    });
+  });
+
+  it('publishes a terminal error when neither generation nor fallback produces a title', async () => {
+    mockInitializeClient.mockRejectedValue(new Error('title model unavailable'));
+
+    await addTitle(
+      { user: { id: 'user-1' }, body: {} },
+      { text: '', responseText: '', conversationId: 'empty-chat' },
+    );
+
+    expect(getTitleState('empty-chat')).toMatchObject({
+      status: 'error',
+      code: 'title_generation_failed',
+    });
   });
   it.each(['database', 'cache'])('owns a detached fallback %s failure', async (boundary) => {
     mockInitializeClient.mockResolvedValue({

@@ -62,6 +62,7 @@ const addTitle = async (
       ? null
       : createTitleGenerationTracker({
           cache: getLogStores(CacheKeys.TITLE_GENERATION),
+          logger,
           userId,
           conversationId: convoId,
         });
@@ -125,7 +126,7 @@ const addTitle = async (
       return;
     }
 
-    await publishConversationTitle(
+    const publishedTitle = await publishConversationTitle(
       { saveConvo, getConvo, titleCache },
       {
         ctx: {
@@ -144,8 +145,10 @@ const addTitle = async (
     );
     if (discardSignal?.aborted) {
       await tracker?.discarded();
+    } else if (publishedTitle != null) {
+      await tracker?.complete(publishedTitle);
     } else {
-      await tracker?.complete(title);
+      await tracker?.error('title_publication_failed');
     }
   } catch (error) {
     logger.error('Error generating title:', error);

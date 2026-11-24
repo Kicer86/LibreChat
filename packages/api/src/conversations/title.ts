@@ -54,13 +54,27 @@ function parseTitleGenerationState(value: string | undefined): TitleGenerationSt
   }
 }
 
+async function readTitleGenerationState(
+  cache: TitleCache,
+  key: string,
+): Promise<TitleGenerationState | undefined> {
+  const pointer = await cache.get(key);
+  const direct = parseTitleGenerationState(pointer);
+  if (direct != null || pointer == null) {
+    return direct;
+  }
+  return parseTitleGenerationState(await cache.get(`${key}:${pointer}`));
+}
+
 export function createTitleGenerationTracker({
   cache,
+  logger,
   userId,
   conversationId,
   jobId = randomUUID(),
 }: {
   cache: TitleCache;
+  logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
   userId: string;
   conversationId: string;
   jobId?: string;
@@ -70,20 +84,30 @@ export function createTitleGenerationTracker({
     status: TitleGenerationState['status'],
     details?: Pick<TitleGenerationState, 'title' | 'code'>,
   ): Promise<void> => {
-    if (status !== 'pending') {
-      const current = parseTitleGenerationState(await cache.get(key));
-      if (current?.jobId !== jobId) {
-        return;
+    try {
+      const state: TitleGenerationState = {
+        conversationId,
+        jobId,
+        status,
+        updatedAt: Date.now(),
+        ...details,
+      };
+      const stateKey = `${key}:${jobId}`;
+      if (status === 'pending') {
+        await cache.set(stateKey, JSON.stringify(state), TITLE_GENERATION_STATE_TTL);
+        await cache.set(key, jobId, TITLE_GENERATION_STATE_TTL);
+      } else {
+        const currentJobId = await cache.get(key);
+        if (currentJobId === jobId) {
+          await cache.set(stateKey, JSON.stringify(state), TITLE_GENERATION_STATE_TTL);
+        } else if (status === 'unavailable' && currentJobId == null) {
+          await cache.set(stateKey, JSON.stringify(state), TITLE_GENERATION_STATE_TTL);
+          await cache.set(key, jobId, TITLE_GENERATION_STATE_TTL);
+        }
       }
+    } catch (error) {
+      logger.error('[title_state] Title state update failed', getSafeErrorMetadata(error));
     }
-    const state: TitleGenerationState = {
-      conversationId,
-      jobId,
-      status,
-      updatedAt: Date.now(),
-      ...details,
-    };
-    await cache.set(key, JSON.stringify(state), TITLE_GENERATION_STATE_TTL);
   };
 
   return {
@@ -143,7 +167,7 @@ export function createTitleGenerationStreamHandler(
     try {
       const cache = deps.getCache();
       while (!closed) {
-        let state = parseTitleGenerationState(await cache.get(key));
+        let state = await readTitleGenerationState(cache, key);
         if (state == null && deps.getLegacyCache != null) {
           const legacy = deps.getLegacyCache();
           const generated = await legacy.get(key);
@@ -219,7 +243,7 @@ export async function publishConversationTitle(
     discardSignal,
     onTitleGenerated,
   }: TitlePublication,
-): Promise<void> {
+): Promise<string | undefined> {
   if (discardSignal?.aborted) {
     return;
   }
@@ -286,6 +310,7 @@ export async function publishConversationTitle(
   if (saved && !publishedEarly && !signal?.aborted) {
     await onTitleGenerated?.({ conversationId, title: current.title });
   }
+  return current.title;
 }
 
 /** Detached fallback publication owns its failure after the response has ended. */
@@ -294,11 +319,12 @@ export async function publishFallbackConversationTitle(
     logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
   },
   publication: TitlePublication,
-): Promise<void> {
+): Promise<string | undefined> {
   try {
-    await publishConversationTitle(deps, publication);
+    return await publishConversationTitle(deps, publication);
   } catch (error) {
     deps.logger.error('[addTitle] Fallback publication failed', getSafeErrorMetadata(error));
+    return;
   }
 }
 

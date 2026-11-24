@@ -81,6 +81,82 @@ describe('generated title polling', () => {
 describe('title generation state', () => {
   it('does not let an older job replace a newer job state', async () => {
     const values = new Map<string, string>();
+    let blockOlder = false;
+    let releaseOlder!: () => void;
+    let reachedOlder!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseOlder = resolve;
+    });
+    const reached = new Promise<void>((resolve) => {
+      reachedOlder = resolve;
+    });
+    const cache = {
+      get: jest.fn(async (key: string) => values.get(key)),
+      set: jest.fn(async (key: string, value: string) => {
+        if (blockOlder && key.endsWith(':older') && JSON.parse(value).status === 'complete') {
+          reachedOlder();
+          await release;
+        }
+        values.set(key, value);
+        return true;
+      }),
+      delete: jest.fn(async (key: string) => values.delete(key)),
+    };
+    const older = createTitleGenerationTracker({
+      cache,
+      logger: { error: jest.fn() },
+      userId: 'user-1',
+      conversationId: 'chat',
+      jobId: 'older',
+    });
+    const newer = createTitleGenerationTracker({
+      cache,
+      logger: { error: jest.fn() },
+      userId: 'user-1',
+      conversationId: 'chat',
+      jobId: 'newer',
+    });
+
+    await older.pending();
+    blockOlder = true;
+    const stale = older.complete('Stale title');
+    await reached;
+    await newer.pending();
+    releaseOlder();
+    await stale;
+    await newer.complete('Current title');
+
+    expect(values.get('user-1-chat')).toBe('newer');
+    expect(JSON.parse(values.get('user-1-chat:newer') ?? '{}')).toMatchObject({
+      jobId: 'newer',
+      status: 'complete',
+      title: 'Current title',
+    });
+  });
+
+  it('does not let state-cache failures stop title generation', async () => {
+    const logger = { error: jest.fn() };
+    const tracker = createTitleGenerationTracker({
+      cache: {
+        get: jest.fn().mockRejectedValue(new Error('cache unavailable')),
+        set: jest.fn().mockRejectedValue(new Error('cache unavailable')),
+        delete: jest.fn(),
+      },
+      logger,
+      userId: 'user-1',
+      conversationId: 'chat',
+      jobId: 'job',
+    });
+
+    await expect(tracker.pending()).resolves.toBeUndefined();
+    await expect(tracker.complete('Ready')).resolves.toBeUndefined();
+    expect(logger.error).toHaveBeenCalledWith('[title_state] Title state update failed', {
+      type: 'Error',
+    });
+  });
+
+  it('streams pending and completed states independently of the chat stream', async () => {
+    const values = new Map<string, string>();
     const cache = {
       get: jest.fn(async (key: string) => values.get(key)),
       set: jest.fn(async (key: string, value: string) => {
@@ -89,57 +165,19 @@ describe('title generation state', () => {
       }),
       delete: jest.fn(async (key: string) => values.delete(key)),
     };
-    const older = createTitleGenerationTracker({
+    const tracker = createTitleGenerationTracker({
       cache,
+      logger: { error: jest.fn() },
       userId: 'user-1',
       conversationId: 'chat',
-      jobId: 'older',
+      jobId: 'job-1',
     });
-    const newer = createTitleGenerationTracker({
-      cache,
-      userId: 'user-1',
-      conversationId: 'chat',
-      jobId: 'newer',
-    });
-
-    await older.pending();
-    await newer.pending();
-    await older.complete('Stale title');
-    await newer.complete('Current title');
-
-    expect(JSON.parse(values.get('user-1-chat') ?? '{}')).toMatchObject({
-      jobId: 'newer',
-      status: 'complete',
-      title: 'Current title',
-    });
-  });
-
-  it('streams pending and completed states independently of the chat stream', async () => {
-    const states = [
-      JSON.stringify({
-        jobId: 'job-1',
-        conversationId: 'chat',
-        status: 'pending',
-        updatedAt: 1,
-      }),
-      JSON.stringify({
-        jobId: 'job-1',
-        conversationId: 'chat',
-        status: 'complete',
-        title: 'Generated title',
-        updatedAt: 2,
-      }),
-    ];
-    const complete = states[1];
-    const cache = {
-      get: jest.fn(async () => states.shift() ?? complete),
-      set: jest.fn(),
-      delete: jest.fn(),
-    };
+    await tracker.pending();
+    const next = jest.fn(async () => tracker.complete('Generated title'));
     const handler = createTitleGenerationStreamHandler({
       getCache: () => cache,
       logger: { error: jest.fn() },
-      delay: jest.fn().mockResolvedValue(undefined),
+      delay: next,
     });
     const app = express();
     app.get('/title/:conversationId', async (req, res) => {

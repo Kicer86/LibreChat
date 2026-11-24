@@ -411,6 +411,11 @@ describe('agents addTitle', () => {
     );
     expect(mockCache.set).toHaveBeenCalledWith('user-1-cid', 'Renamed', 120000);
     expect(onTitleGenerated).not.toHaveBeenCalled();
+    const jobId = mockTitleStateStore.get('user-1-cid');
+    expect(JSON.parse(mockTitleStateStore.get(`user-1-cid:${jobId}`))).toMatchObject({
+      status: 'complete',
+      title: 'Renamed',
+    });
   });
   it('publishes eagerly while a new row is still absent, then fences persistence', async () => {
     let resolveConvo;
