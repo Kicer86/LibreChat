@@ -1,7 +1,6 @@
 const {
   isEnabled,
   publishConversationTitle,
-  raceWithTimeout,
   createTitleGenerationTracker,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
@@ -87,7 +86,7 @@ const addTitle = async (
   const key = `${req.user.id}-${convoId}`;
   try {
     await tracker?.pending();
-    let abortController = new AbortController();
+    const abortController = new AbortController();
     /** Propagate a request abort (Stop) to the title generation so a cancelled
      *  turn does not consume the title model or surface a title. */
     if (signal) {
@@ -101,18 +100,11 @@ const addTitle = async (
       await tracker?.unavailable();
       return;
     }
-    const titlePromise = raceWithTimeout(
-      client.titleConvo({
-        text,
-        abortController,
-        immediate,
-      }),
-      45000,
-      logger,
-      'Title generation',
-    );
-
-    const generatedTitle = await titlePromise;
+    const generatedTitle = await client.titleConvo({
+      text,
+      abortController,
+      immediate,
+    });
     if (!abortController.signal.aborted) {
       abortController.abort();
     }

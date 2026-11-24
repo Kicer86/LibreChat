@@ -46,6 +46,8 @@ const {
   PENDING_ACTION_EXPIRED_CODE,
   getTransactionsConfig,
   resolveRecursionLimit,
+  resolveModelTransportTimeouts,
+  createTitleGenerationWatchdog,
   buildPendingAction,
   toClientPendingAction,
   captureCodeExecutionApprovalBinding,
@@ -6259,13 +6261,11 @@ class AgentClient extends BaseClient {
       delete clientOptions.modelKwargs.max_output_tokens;
     }
 
-    /** `omitTitleOptions` drops the Anthropic `clientOptions` carrier (thinking,
-     *  streaming, etc.), which would also drop its `defaultHeaders` — preserve the
-     *  original `clientOptions` object so gateway/reverse-proxy metadata still
-     *  reaches title requests (the proxy may require it for auth/routing). Restore
-     *  the SAME object reference, not a copy: the Vertex `createClient` closure from
-     *  `getLLMConfig` closes over this object, so `resolveConfigHeaders` must mutate
-     *  the very object the client is built from. */
+    /** `omitTitleOptions` drops the Anthropic `clientOptions` carrier. Preserve the
+     *  whole object, not only headers: it can also contain transport options such as
+     *  a custom fetch implementation. Restore the SAME object reference, not a copy:
+     *  the Vertex `createClient` closure from `getLLMConfig` closes over this object,
+     *  so `resolveConfigHeaders` must mutate the object the client is built from. */
     const anthropicClientOptions = clientOptions?.clientOptions;
 
     clientOptions = Object.assign(
@@ -6274,9 +6274,14 @@ class AgentClient extends BaseClient {
       ),
     );
 
-    if (anthropicClientOptions?.defaultHeaders != null && clientOptions.clientOptions == null) {
+    if (anthropicClientOptions != null && clientOptions.clientOptions == null) {
       clientOptions.clientOptions = anthropicClientOptions;
     }
+
+    /** LangChain's title chain uses `invoke`, but a streaming callback makes its
+     *  chat-model layer consume `_streamResponseChunks` internally. This keeps the
+     *  final title aggregation unchanged while exposing provider progress. */
+    clientOptions.streaming = true;
 
     if (
       provider === Providers.GOOGLE &&
@@ -6306,28 +6311,37 @@ class AgentClient extends BaseClient {
 
     try {
       await requirePrivateTextAdmission(req, abortController.signal);
-      const titleResult = await this.run.generateTitle({
-        provider,
-        clientOptions,
-        inputText: text,
-        contentParts: immediate ? [] : this.contentParts,
-        titleMethod: titleConfig.titleMethod,
-        titlePrompt: titleConfig.titlePrompt,
-        titlePromptTemplate: titleConfig.titlePromptTemplate,
-        chainOptions: {
-          runName: 'TitleRun',
-          signal: abortController.signal,
-          callbacks: [
-            {
-              handleLLMEnd,
-            },
-          ],
-          configurable: {
-            thread_id: this.conversationId,
-            user_id: this.user ?? this.options.req.user?.id,
-          },
-        },
+      const timeouts = resolveModelTransportTimeouts(appConfig?.endpoints?.agents);
+      const watchdog = createTitleGenerationWatchdog({
+        abortController,
+        headersTimeout: timeouts.headersTimeout,
+        bodyTimeout: timeouts.bodyTimeout,
       });
+      const titleResult = await watchdog.run(() =>
+        this.run.generateTitle({
+          provider,
+          clientOptions,
+          inputText: text,
+          contentParts: immediate ? [] : this.contentParts,
+          titleMethod: titleConfig.titleMethod,
+          titlePrompt: titleConfig.titlePrompt,
+          titlePromptTemplate: titleConfig.titlePromptTemplate,
+          chainOptions: {
+            runName: 'TitleRun',
+            signal: abortController.signal,
+            callbacks: [
+              {
+                handleLLMEnd,
+              },
+              watchdog.callback,
+            ],
+            configurable: {
+              thread_id: this.conversationId,
+              user_id: this.user ?? this.options.req.user?.id,
+            },
+          },
+        }),
+      );
 
       const collectedUsage = collectedMetadata.map((item) => {
         let input_tokens, output_tokens;

@@ -4583,6 +4583,24 @@ describe('AgentClient - titleConvo', () => {
       });
     });
 
+    it('uses the streaming model path for title generation', async () => {
+      await client.titleConvo({
+        text: 'Test conversation text',
+        abortController: new AbortController(),
+      });
+
+      const call = mockRun.generateTitle.mock.calls[0][0];
+      expect(call.clientOptions.streaming).toBe(true);
+      expect(call.chainOptions.callbacks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            lc_prefer_streaming: true,
+            handleLLMNewToken: expect.any(Function),
+          }),
+        ]),
+      );
+    });
+
     it('should record collected usage after title generation', async () => {
       const text = 'Test conversation text';
       const abortController = new AbortController();
